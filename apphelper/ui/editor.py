@@ -7,8 +7,8 @@ from typing import Callable
 from PySide6.QtCore import QMimeData, QPoint, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QDrag, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QHBoxLayout, QLabel, QListView, QListWidget, QListWidgetItem,
-    QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea, QSpinBox, QSplitter, QToolButton,
+    QAbstractItemView, QCheckBox, QComboBox, QHBoxLayout, QInputDialog, QLabel, QListView,
+    QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea, QSpinBox, QSplitter, QToolButton,
     QVBoxLayout, QWidget,
 )
 
@@ -302,8 +302,9 @@ class SlotRow(QWidget):
         self.end = QSpinBox()
         for s in (self.start, self.end):
             s.setRange(0, 59)
-            s.setSuffix("분")
-            s.setFixedWidth(64)
+            s.setAlignment(Qt.AlignmentFlag.AlignRight)
+            # 숫자 두 자리와 화살표 버튼이 모두 보이도록 넉넉히 잡는다 (Windows 11 스타일 대비).
+            s.setMinimumWidth(s.fontMetrics().horizontalAdvance("00") + 48)
         self.blocks = BlockList(self)
         more = QToolButton()
         more.setText("⋯")
@@ -316,8 +317,9 @@ class SlotRow(QWidget):
         lay.setContentsMargins(4, 2, 4, 2)
         lay.addWidget(self.enabled)
         lay.addWidget(self.start)
-        lay.addWidget(QLabel("~"))
+        lay.addWidget(QLabel("분 ~"))
         lay.addWidget(self.end)
+        lay.addWidget(QLabel("분"))
         lay.addWidget(self.blocks, 1)
         lay.addWidget(more)
 
@@ -430,8 +432,27 @@ class EditorWindow(QMainWindow):
         bottom.addWidget(self.status, 1)
         bottom.addWidget(settings_btn)
 
+        self.profile_box = QComboBox()
+        self.profile_box.setMinimumWidth(160)
+        self.profile_box.activated.connect(lambda _: self.switch_profile(self.profile_box.currentText()))
+        top = QHBoxLayout()
+        top.addWidget(QLabel("<b>프로필</b>"))
+        top.addWidget(self.profile_box)
+        for text, fn in (("새 프로필", lambda: self._new_profile(False)),
+                         ("복제", lambda: self._new_profile(True)),
+                         ("이름 변경", self._rename_profile),
+                         ("삭제", self._delete_profile)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            top.addWidget(b)
+        top.addStretch()
+        hint = QLabel("트레이 실행 시 현재 선택된 프로필의 스케줄이 실행됩니다")
+        hint.setStyleSheet("color: gray;")
+        top.addWidget(hint)
+
         central = QWidget()
         cl = QVBoxLayout(central)
+        cl.addLayout(top)
         cl.addWidget(splitter, 1)
         cl.addLayout(bottom)
         self.setCentralWidget(central)
@@ -441,6 +462,12 @@ class EditorWindow(QMainWindow):
         self.clipboard = [BlockRef(b.kind, b.ref) for b in blocks]
 
     def refresh(self):
+        self.profile_box.blockSignals(True)
+        self.profile_box.clear()
+        self.profile_box.addItems(self.data.profile_names())
+        self.profile_box.setCurrentText(self.data.profile)
+        self.profile_box.blockSignals(False)
+        self.setWindowTitle(f"Apphelper — 편집 [{self.data.profile}]")
         self.library.refresh()
         for r in self.rows:
             r.refresh()
@@ -475,9 +502,56 @@ class EditorWindow(QMainWindow):
 
     def load(self, data: AppData):
         self.data = data.clone()
+        self._rebind()
+
+    def _rebind(self):
+        self.clipboard = []  # 다른 프로필의 블록 id 는 의미가 없다
         for r, slot in zip(self.rows, self.data.slots):
             r.slot = slot
         self.refresh()
+
+    # ------------------------------------------------------------ 프로필
+    def switch_profile(self, name: str):
+        if name == self.data.profile or name not in self.data.profile_names():
+            return
+        self.data.switch_profile(name)
+        self._rebind()
+        self.changed(refresh=False)
+
+    def _ask_name(self, title: str, default: str = "") -> str | None:
+        name, ok = QInputDialog.getText(self, title, "프로필 이름", text=default)
+        name = name.strip()
+        if not ok or not name:
+            return None
+        if name in self.data.profile_names() and name != default:
+            QMessageBox.warning(self, "프로필", f"'{name}' 프로필이 이미 있습니다.")
+            return None
+        return name
+
+    def _new_profile(self, copy_current: bool):
+        name = self._ask_name("프로필 복제" if copy_current else "새 프로필")
+        if name:
+            self.data.new_profile(name, copy_current=copy_current)
+            self._rebind()
+            self.changed(refresh=False)
+
+    def _rename_profile(self):
+        name = self._ask_name("이름 변경", self.data.profile)
+        if name and name != self.data.profile:
+            self.data.rename_profile(name)
+            self.changed()
+
+    def _delete_profile(self):
+        if not self.data.profiles:
+            QMessageBox.information(self, "프로필", "마지막 프로필은 삭제할 수 없습니다.")
+            return
+        if QMessageBox.question(self, "프로필 삭제",
+                                f"'{self.data.profile}' 프로필과 그 안의 동작·스케줄을 삭제할까요?"
+                                ) != QMessageBox.StandardButton.Yes:
+            return
+        self.data.delete_profile()
+        self._rebind()
+        self.changed(refresh=False)
 
     def closeEvent(self, e):
         self.flush()

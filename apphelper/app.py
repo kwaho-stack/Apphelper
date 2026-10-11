@@ -71,6 +71,8 @@ class TrayApp:
         self.toggle_action = QAction(menu)
         self.toggle_action.triggered.connect(self.toggle_running)
         menu.addAction(self.toggle_action)
+        self.profile_menu = menu.addMenu("프로필")
+        self.profile_menu.aboutToShow.connect(self._build_profile_menu)
         menu.addAction("편집 화면 열기", self.open_editor)
         menu.addSeparator()
         menu.addAction("종료", self.quit)
@@ -114,9 +116,32 @@ class TrayApp:
         paused = self.service.paused
         self.toggle_action.setText("실행" if paused else "일시정지")
         self.tray.setIcon(make_icon(paused))
-        self.tray.setToolTip("Apphelper — " + ("일시정지" if paused else "실행 중"))
+        profile = (self.editor.data if self.editor else self.data).profile
+        self.tray.setToolTip(f"Apphelper — {'일시정지' if paused else '실행 중'} [{profile}]")
+
+    def _build_profile_menu(self):
+        self.profile_menu.clear()
+        data = self.editor.data if self.editor else self.data
+        for name in data.profile_names():
+            act = self.profile_menu.addAction(name)
+            act.setCheckable(True)
+            act.setChecked(name == data.profile)
+            act.triggered.connect(lambda _=False, n=name: self.switch_profile(n))
+
+    def switch_profile(self, name: str):
+        """트레이에서 프로필 전환. 편집 화면이 있으면 그쪽 데이터를 기준으로 바꾼다."""
+        if self.editor:
+            self.editor.switch_profile(name)
+            self.editor.flush()
+        elif name != self.data.profile:
+            data = self.data.clone()
+            data.switch_profile(name)
+            self._on_editor_save(data)
+        self._update_tray()
 
     def toggle_running(self):
+        if self.editor:
+            self.editor.flush()
         self.service.set_paused(not self.service.paused)
         self.data.settings.running = not self.service.paused
         if self.editor:
@@ -143,6 +168,7 @@ class TrayApp:
         if debug_changed:
             configure_logging(self.store, data.settings.debug_log)
         self.service.update_data(data)
+        self._update_tray()
 
     def _save(self, data: AppData):
         try:
@@ -170,6 +196,8 @@ class TrayApp:
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Apphelper")
+    # Windows 11 기본 스타일은 스핀박스 화살표가 넓어 숫자가 가려지므로 Fusion 으로 통일한다.
+    app.setStyle("Fusion")
     app.setQuitOnLastWindowClosed(False)
 
     # 이미 실행 중이면 그쪽 편집 화면을 열고 끝낸다.

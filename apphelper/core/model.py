@@ -153,12 +153,22 @@ class Settings:
         return bool(self.github_owner and self.github_repo and self.github_token)
 
 
+DEFAULT_PROFILE = "기본"
+
+
 @dataclass
 class AppData:
+    """현재(활성) 프로필의 동작·슬롯과 전역 설정.
+
+    프로필마다 기본동작, 핵심 crash, 24시간 슬롯을 따로 가진다. 설정(GitHub, 로그, 실행 상태)은
+    모든 프로필이 함께 쓴다. 활성 프로필이 아닌 프로필은 직렬화된 dict 로 profiles 에 보관한다.
+    """
     actions: list[BasicAction] = field(default_factory=list)
     key_crashes: list[KeyCrash] = field(default_factory=list)
     slots: list[Slot] = field(default_factory=lambda: [Slot(h) for h in range(HOURS)])
     settings: Settings = field(default_factory=Settings)
+    profile: str = DEFAULT_PROFILE
+    profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # 조회 도우미
     def action(self, action_id: str) -> BasicAction | None:
@@ -185,24 +195,79 @@ class AppData:
     def clone(self) -> "AppData":
         return copy.deepcopy(self)
 
-    def to_dict(self) -> dict[str, Any]:
+    # 프로필
+    def profile_names(self) -> list[str]:
+        return sorted(set(self.profiles) | {self.profile})
+
+    def _profile_dict(self) -> dict[str, Any]:
         return {
-            "version": 1,
             "actions": [a.to_dict() for a in self.actions],
             "key_crashes": [k.to_dict() for k in self.key_crashes],
             "slots": [s.to_dict() for s in self.slots],
+        }
+
+    def _load_profile(self, name: str, d: dict[str, Any]) -> None:
+        slots_by_hour = {s.hour: s for s in (Slot.from_dict(x) for x in d.get("slots", []))}
+        self.actions = [BasicAction.from_dict(a) for a in d.get("actions", [])]
+        self.key_crashes = [KeyCrash.from_dict(k) for k in d.get("key_crashes", [])]
+        self.slots = [slots_by_hour.get(h, Slot(h)) for h in range(HOURS)]
+        self.profile = name
+
+    def switch_profile(self, name: str) -> None:
+        if name == self.profile:
+            return
+        if name not in self.profiles:
+            raise KeyError(name)
+        self.profiles[self.profile] = self._profile_dict()
+        self._load_profile(name, self.profiles.pop(name))
+
+    def new_profile(self, name: str, copy_current: bool = False) -> None:
+        """새 프로필을 만들고 그 프로필로 전환한다. copy_current 면 현재 내용을 복제한다."""
+        name = name.strip()
+        if not name or name in self.profile_names():
+            raise ValueError("이미 있거나 빈 프로필 이름입니다")
+        current = self._profile_dict()
+        self.profiles[self.profile] = copy.deepcopy(current)
+        self._load_profile(name, current if copy_current else {})
+
+    def rename_profile(self, name: str) -> None:
+        name = name.strip()
+        if not name or (name != self.profile and name in self.profiles):
+            raise ValueError("이미 있거나 빈 프로필 이름입니다")
+        self.profile = name
+
+    def delete_profile(self) -> None:
+        """현재 프로필을 지우고 남은 프로필 중 첫 번째로 전환한다. 마지막 하나는 지울 수 없다."""
+        if not self.profiles:
+            raise ValueError("마지막 프로필은 삭제할 수 없습니다")
+        first = sorted(self.profiles)[0]
+        self._load_profile(first, self.profiles.pop(first))
+
+    def to_dict(self) -> dict[str, Any]:
+        profiles = {name: copy.deepcopy(p) for name, p in self.profiles.items()}
+        profiles[self.profile] = self._profile_dict()
+        return {
+            "version": 2,
+            "active_profile": self.profile,
+            "profiles": profiles,
             "settings": self.settings.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "AppData":
-        slots_by_hour = {s.hour: s for s in (Slot.from_dict(x) for x in d.get("slots", []))}
-        return cls(
-            actions=[BasicAction.from_dict(a) for a in d.get("actions", [])],
-            key_crashes=[KeyCrash.from_dict(k) for k in d.get("key_crashes", [])],
-            slots=[slots_by_hour.get(h, Slot(h)) for h in range(HOURS)],
-            settings=Settings.from_dict(d.get("settings", {})),
-        )
+        data = cls(settings=Settings.from_dict(d.get("settings", {})))
+        if "profiles" in d:
+            profiles = {str(k): v for k, v in d["profiles"].items()}
+        else:  # version 1: 프로필 없이 저장된 데이터는 '기본' 프로필로 옮긴다
+            profiles = {DEFAULT_PROFILE: d}
+        if not profiles:
+            profiles = {DEFAULT_PROFILE: {}}
+        active = d.get("active_profile")
+        if active not in profiles:
+            active = sorted(profiles)[0]
+        data._load_profile(active, profiles.pop(active))
+        data.profiles = profiles
+        return data
 
 
 # ---------------------------------------------------------------- 저장소
