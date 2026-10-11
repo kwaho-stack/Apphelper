@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Apphelper 결과</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #6b7280; --line: #e5e7eb;
+    --ok: #15803d; --ok-bg: #dcfce7; --fail: #b91c1c; --fail-bg: #fee2e2;
+    --wait: #92400e; --wait-bg: #fef3c7; --accent: #2563eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111318; --card: #1a1d24; --text: #e6e8ee; --muted: #9aa1ad; --line: #2a2f3a;
+      --ok: #4ade80; --ok-bg: #14301f; --fail: #f87171; --fail-bg: #3a1717;
+      --wait: #fbbf24; --wait-bg: #3a2e10; --accent: #60a5fa;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  .days { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 16px; }
+  .days button { flex: none; border: 1px solid var(--line); background: var(--card); color: var(--text);
+                 border-radius: 8px; padding: 6px 10px; cursor: pointer; font: inherit; font-size: 13px; }
+  .days button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 4px 0; }
+  .summary { color: var(--muted); font-size: 13px; margin: 0 0 10px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+       padding: 10px 16px; border-top: 1px solid var(--line); }
+  li:first-child { border-top: 0; }
+  .when { font-variant-numeric: tabular-nums; }
+  .tags { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .tag { border-radius: 999px; padding: 2px 10px; font-size: 13px; font-weight: 600; white-space: nowrap; }
+  .ok { color: var(--ok); background: var(--ok-bg); }
+  .fail { color: var(--fail); background: var(--fail-bg); }
+  .wait { color: var(--wait); background: var(--wait-bg); }
+  .empty { color: var(--muted); padding: 24px 16px; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Apphelper 결과</h1>
+  <div class="days" id="days" role="group" aria-label="날짜 선택"></div>
+  <p class="summary" id="summary"></p>
+  <div class="card"><ul id="list"></ul></div>
+</main>
+<script>
+(function () {
+  "use strict";
+  var data = { days: {} };
+  var selected = null;
+
+  function iso(d) {
+    var m = String(d.getMonth() + 1).padStart(2, "0");
+    var day = String(d.getDate()).padStart(2, "0");
+    return d.getFullYear() + "-" + m + "-" + day;
+  }
+
+  function recentDays() {
+    var out = [], d = new Date();
+    for (var i = 0; i < 7; i++) {
+      out.push(iso(d));
+      d.setDate(d.getDate() - 1);
+    }
+    return out;
+  }
+
+  function tag(text, cls) {
+    var s = document.createElement("span");
+    s.className = "tag " + cls;
+    s.textContent = text;
+    return s;
+  }
+
+  function renderDays() {
+    var box = document.getElementById("days");
+    box.textContent = "";
+    recentDays().forEach(function (day, i) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.textContent = i === 0 ? "오늘" : day.slice(5).replace("-", "/");
+      b.setAttribute("aria-pressed", String(day === selected));
+      b.onclick = function () { selected = day; render(); };
+      box.appendChild(b);
+    });
+  }
+
+  function render() {
+    renderDays();
+    var entries = data.days[selected] || {};
+    var hours = Object.keys(entries).map(Number).sort(function (a, b) { return a - b; });
+    var list = document.getElementById("list");
+    list.textContent = "";
+    document.getElementById("summary").textContent = hours.length
+      ? "작동 체크한 시간대: " + hours.map(function (h) { return h + "시"; }).join(", ")
+      : "";
+    if (!hours.length) {
+      var li = document.createElement("li");
+      li.className = "empty";
+      li.textContent = "이 날짜의 기록이 없습니다";
+      list.appendChild(li);
+      return;
+    }
+    hours.forEach(function (h) {
+      var e = entries[String(h)];
+      var li = document.createElement("li");
+      var when = document.createElement("span");
+      when.className = "when";
+      var tags = document.createElement("span");
+      tags.className = "tags";
+      if (e.r === "작동") {
+        when.textContent = h + "시 — " + e.m + "분 작동";
+        (e.k || []).forEach(function (k) { tags.appendChild(tag(k, k === "변함!" ? "ok" : "fail")); });
+        if (!(e.k || []).length) tags.appendChild(tag("작동", "ok"));
+      } else if (e.r === "실패") {
+        when.textContent = typeof e.m === "number" ? h + "시 — " + e.m + "분" : h + "시";
+        tags.appendChild(tag("실패", "fail"));
+      } else {
+        when.textContent = h + "시";
+        tags.appendChild(tag("대기", "wait"));
+      }
+      li.appendChild(when);
+      li.appendChild(tags);
+      list.appendChild(li);
+    });
+  }
+
+  selected = recentDays()[0];
+  render();
+  fetch("results.json?t=" + Date.now(), { cache: "no-store" })
+    .then(function (r) { return r.ok ? r.json() : { days: {} }; })
+    .then(function (j) { data = j && j.days ? j : { days: {} }; render(); })
+    .catch(function () { render(); });
+})();
+</script>
+</body>
+</html>

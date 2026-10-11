@@ -1,0 +1,22 @@
+name: build
+
+on:
+  push:
+    branches-ignore: [gh-pages]
+  workflow_dispatch:
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+      - run: python -m PyInstaller --noconfirm --clean apphelper.spec
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Apphelper
+          path: dist/Apphelper.exe
