@@ -69,7 +69,8 @@ class Service:
     # ------------------------------------------------------------ 스케줄 콜백
     def _execute(self, slot: Slot, data: AppData, when: datetime) -> None:
         log.debug("%d시 슬롯 실행 시작 (%d분)", slot.hour, when.minute)
-        result = run_slot(data, slot, self.backend, should_stop=lambda: self.scheduler.stopping)
+        result = run_slot(data, slot, self.backend, sleep=self.scheduler.sleep,
+                          should_stop=lambda: self.scheduler.stopping)
         self.results.record(when, result.ok, result.key_results)
         self.request_publish()
 

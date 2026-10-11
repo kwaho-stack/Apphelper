@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import copy
+import threading
 from typing import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox, QHBoxLayout,
@@ -117,13 +118,13 @@ class BasicActionDialog(QDialog):
 
     def _pick_for(self, button: QWidget) -> None:
         row = self._row_of(button)
-        pt = pick_coordinate(self.backend, [self, self.parentWidget()] if self.parentWidget() else [self])
+        pt = pick_coordinate(self.backend, [self, self.parentWidget()])
         if row >= 0 and pt:
             self.table.cellWidget(row, self.COL_X).setValue(pt[0])
             self.table.cellWidget(row, self.COL_Y).setValue(pt[1])
 
     def _add_crash_pick(self) -> None:
-        pt = pick_coordinate(self.backend, [self, self.parentWidget()] if self.parentWidget() else [self])
+        pt = pick_coordinate(self.backend, [self, self.parentWidget()])
         if pt:
             self._append(Step("crash", x=pt[0], y=pt[1]))
 
@@ -254,7 +255,7 @@ class KeyCrashDialog(QDialog):
                 self.preview.setItem(h, c, item)
 
     def _pick(self) -> None:
-        pt = pick_coordinate(self.backend, [self, self.parentWidget()] if self.parentWidget() else [self])
+        pt = pick_coordinate(self.backend, [self, self.parentWidget()])
         if pt:
             self.base_x.setValue(pt[0])
             self.base_y.setValue(pt[1])
@@ -269,6 +270,11 @@ class KeyCrashDialog(QDialog):
 
 
 # ------------------------------------------------------------------ 설정
+
+class _Relay(QObject):
+    """작업 스레드의 결과를 GUI 스레드로 넘기는 신호."""
+    done = Signal(str)
+
 
 class SettingsDialog(QDialog):
     def __init__(self, settings: Settings, on_test: Callable[[Settings], str],
@@ -296,8 +302,10 @@ class SettingsDialog(QDialog):
         form.addRow("", QLabel("토큰은 이 앱 폴더의 data/config.json 에만 저장됩니다."))
         form.addRow("", self.debug)
 
-        test = QPushButton("결과 페이지 지금 갱신")
+        test = self.test_btn = QPushButton("결과 페이지 지금 갱신")
         test.clicked.connect(self._test)
+        self._relay = _Relay(self)
+        self._relay.done.connect(self._test_done)
         wipe = QPushButton("전체 데이터 삭제")
         wipe.setStyleSheet("color: #b91c1c;")
         wipe.clicked.connect(self._wipe)
@@ -325,10 +333,26 @@ class SettingsDialog(QDialog):
         return s
 
     def _test(self) -> None:
-        try:
-            msg = self._on_test(self._collect())
-        except Exception as e:  # noqa: BLE001
-            msg = f"실패: {e}"
+        """네트워크 작업은 별도 스레드에서 돌려 화면이 멈추지 않게 한다."""
+        self.test_btn.setEnabled(False)
+        self.test_btn.setText("갱신 중…")
+        settings = self._collect()
+
+        def work():
+            try:
+                msg = self._on_test(settings)
+            except Exception as e:  # noqa: BLE001
+                msg = f"실패: {e}"
+            try:
+                self._relay.done.emit(msg)
+            except RuntimeError:  # 그 사이 설정 창이 닫힘
+                pass
+
+        threading.Thread(target=work, daemon=True, name="apphelper-test-publish").start()
+
+    def _test_done(self, msg: str) -> None:
+        self.test_btn.setEnabled(True)
+        self.test_btn.setText("결과 페이지 지금 갱신")
         QMessageBox.information(self, "Apphelper", msg)
 
     def _wipe(self) -> None:

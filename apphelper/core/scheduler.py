@@ -120,6 +120,10 @@ class Scheduler:
     def stopping(self) -> bool:
         return self._stop.is_set()
 
+    def sleep(self, seconds: float) -> None:
+        """종료 요청이 오면 바로 깨어나는 대기 (실행 중인 슬롯의 대기 단계용)."""
+        self._stop.wait(max(seconds, 0))
+
     # ------------------------------------------------------------ 루프
     def tick(self) -> float:
         """한 번 판단하고, 다음 판단까지 기다릴 초를 돌려준다. (테스트에서 직접 호출 가능)"""
