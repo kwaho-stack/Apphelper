@@ -1,8 +1,6 @@
 """좌표 따기: 화면 전체를 덮는 반투명 창을 띄우고 클릭한 위치를 돌려준다."""
 from __future__ import annotations
 
-import sys
-
 from PySide6.QtCore import QEventLoop, Qt, QTimer
 from PySide6.QtGui import QColor, QGuiApplication, QPainter
 from PySide6.QtWidgets import QWidget
@@ -35,10 +33,10 @@ class _Overlay(QWidget):
     def mousePressEvent(self, e):
         # 왼쪽 클릭: 좌표 지정, 그 밖의 버튼: 취소
         if e.button() == Qt.MouseButton.LeftButton:
-            if sys.platform == "win32":
+            if getattr(self.backend, "has_real_cursor", False):
                 # 실제 crash 와 같은 좌표계를 쓰도록 Win32 커서 위치를 읽는다.
                 self.result = tuple(self.backend.get_cursor())
-            else:
+            else:  # 더미 백엔드(비 Windows, 테스트): Qt 클릭 위치를 쓴다
                 pt = e.globalPosition().toPoint()
                 self.result = (pt.x(), pt.y())
         self.close()

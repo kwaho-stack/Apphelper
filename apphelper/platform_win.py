@@ -53,6 +53,7 @@ gdi32.DeleteDC.argtypes = [wintypes.HDC]
 class WinBackend:
     """ScreenBackend 구현. 픽셀은 메모리 버퍼로만 읽고 파일로 저장하지 않는다."""
 
+    has_real_cursor = True
     click_hold = 0.03  # 버튼 누르고 있는 시간(초)
 
     def screen_size(self) -> tuple[int, int]:
