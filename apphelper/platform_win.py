@@ -74,7 +74,8 @@ class WinBackend:
         time.sleep(self.click_hold)
         user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
-    def grab(self, left: int, top: int, width: int, height: int):
+    def grab_bgra(self, left: int, top: int, width: int, height: int) -> bytes:
+        """화면 영역을 BGRA(위→아래 행 순서) 바이트로 읽는다. 메모리에서만 쓰고 파일로 남기지 않는다."""
         screen_dc = user32.GetDC(None)
         mem_dc = gdi32.CreateCompatibleDC(screen_dc)
         bmp = gdi32.CreateCompatibleBitmap(screen_dc, width, height)
@@ -98,9 +99,19 @@ class WinBackend:
             gdi32.DeleteObject(bmp)
             gdi32.DeleteDC(mem_dc)
             user32.ReleaseDC(None, screen_dc)
+        return bytes(buf)
+
+    def grab(self, left: int, top: int, width: int, height: int):
+        buf = self.grab_bgra(left, top, width, height)
         rows = []
         for yy in range(height):
             base = yy * width * 4
             rows.append([(buf[base + i + 2], buf[base + i + 1], buf[base + i])  # BGRA → RGB
                          for i in range(0, width * 4, 4)])
         return rows
+
+    def grab_array(self, left: int, top: int, width: int, height: int):
+        """화면 영역을 numpy (height, width, 3) RGB uint8 배열로 읽는다 (이미지 찾기용)."""
+        import numpy as np
+        buf = self.grab_bgra(left, top, width, height)
+        return np.frombuffer(buf, dtype=np.uint8).reshape(height, width, 4)[:, :, 2::-1].copy()

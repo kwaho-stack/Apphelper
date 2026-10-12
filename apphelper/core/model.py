@@ -73,7 +73,15 @@ class KeyCrash:
     wait_ms: int = 1500
     region: int = 5
     tolerance: int = 10
+    # 'coord': 좌표(기준좌표 + 시간별 변동) / 'image': 화면에서 이미지를 찾아 그 중심을 crash
+    mode: str = "coord"
+    image: dict[str, Any] | None = None  # imagefind.encode_template 형식
+    match: int = 90  # 이미지 일치도 기준 (%)
     id: str = field(default_factory=new_id)
+
+    @property
+    def uses_image(self) -> bool:
+        return self.mode == "image"
 
     def coord_at(self, hour: int) -> tuple[int, int]:
         diff = hour - self.base_hour

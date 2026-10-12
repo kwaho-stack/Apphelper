@@ -98,6 +98,10 @@ class LibraryPanel(QWidget):
                 if isinstance(obj, BasicAction):
                     text = f"{obj.name}  ·  {len(obj.steps)}단계"
                     tip = "\n".join(s.describe() for s in obj.steps) or "(단계 없음)"
+                elif obj.uses_image:
+                    text = f"★ {obj.name}  ·  이미지 찾기 (일치도 {obj.match}%)"
+                    tip = (f"화면에서 이미지를 찾아 중심을 crash / 대기 {obj.wait_ms}ms / "
+                           f"영역 {obj.region}×{obj.region} / 허용오차 ±{obj.tolerance}")
                 else:
                     text = f"★ {obj.name}  ·  기준 {obj.base_hour}시 ({obj.base_x}, {obj.base_y})"
                     tip = (f"변동 dx={obj.dx}, dy={obj.dy} / 대기 {obj.wait_ms}ms / "
@@ -277,7 +281,11 @@ class BlockList(QListWidget):
                 color = BASIC_COLOR
             else:
                 obj = data.key_crash(b.ref)
-                if obj:
+                if obj and obj.uses_image:
+                    text = f"★ {obj.name} [이미지]"
+                    tip = f"{hour}시: 화면에서 이미지를 찾아 그 중심을 crash (일치도 {obj.match}% 이상)"
+                    color = KEY_COLOR
+                elif obj:
                     x, y = obj.coord_at(hour)
                     ok = is_on_screen(x, y, screen)
                     text = f"★ {obj.name} ({x},{y})" + ("" if ok else " ⚠")

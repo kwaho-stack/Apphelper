@@ -2,21 +2,26 @@
 from __future__ import annotations
 
 import copy
+import queue
 import threading
 import time
+import weakref
 from datetime import datetime
 from typing import Callable
 
-from PySide6.QtCore import QObject, QPoint, Qt, Signal
-from PySide6.QtGui import QBrush, QColor
+import shiboken6
+from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtGui import QBrush, QColor, QImage, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QTableWidget,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
+    QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox,
+    QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..core.crash import ScreenBackend, is_on_screen, key_crash
 from ..core.model import BasicAction, KeyCrash, Settings, Step
+from ..core.runner import resolve_target
 from .picker import pick_coordinate
 
 COORD_MAX = 99999
@@ -29,6 +34,31 @@ def spin(lo: int, hi: int, value: int, suffix: str = "") -> QSpinBox:
     if suffix:
         s.setSuffix(suffix)
     return s
+
+
+def run_in_background(fn: Callable[[], str], on_done: Callable[[str], None]) -> None:
+    """fn 을 작업 스레드에서 돌리고, 결과를 GUI 스레드에서 on_done(창의 메서드)으로 넘긴다.
+
+    - 작업 스레드는 Qt 객체를 전혀 만지지 않는다 (결과는 파이썬 큐로만 전달).
+    - 창은 약한 참조로만 잡는다. 그 사이 창이 닫혀 사라지면 결과는 버린다.
+      (강한 참조를 쥐면 창의 마지막 참조가 엉뚱한 때 풀리며 Qt 객체가 이중 삭제될 수 있다.)
+    """
+    results: queue.SimpleQueue[str] = queue.SimpleQueue()
+    threading.Thread(target=lambda: results.put(fn()), daemon=True, name="apphelper-worker").start()
+    callback = weakref.WeakMethod(on_done)
+
+    def poll() -> None:
+        cb = callback()
+        if cb is None or not shiboken6.isValid(cb.__self__):
+            return
+        try:
+            msg = results.get_nowait()
+        except queue.Empty:
+            QTimer.singleShot(50, poll)
+            return
+        cb(msg)
+
+    QTimer.singleShot(50, poll)
 
 
 # ------------------------------------------------------------------ 기본동작
@@ -187,6 +217,35 @@ class KeyCrashDialog(QDialog):
         pick = QPushButton("좌표 따기")
         pick.clicked.connect(self._pick)
 
+        self.mode = QComboBox()
+        self.mode.addItem("좌표로 crash", "coord")
+        self.mode.addItem("이미지를 찾아 그 중심을 crash", "image")
+        self.mode.setCurrentIndex(1 if kc.uses_image else 0)
+        self._image = None
+        if kc.image:
+            from ..core.imagefind import decode_template
+            self._image = decode_template(kc.image)
+        self.image_view = QLabel()
+        self.image_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_view.setMinimumHeight(90)
+        self.image_view.setStyleSheet("border: 1px dashed gray;")
+        self.match = spin(50, 100, kc.match, " %")
+        cap = QPushButton("화면에서 캡처")
+        cap.clicked.connect(self._capture)
+        load = QPushButton("파일에서 불러오기")
+        load.clicked.connect(self._load_file)
+        img_buttons = QHBoxLayout()
+        img_buttons.addWidget(cap)
+        img_buttons.addWidget(load)
+        img_buttons.addStretch()
+        img_buttons.addWidget(QLabel("일치도 기준"))
+        img_buttons.addWidget(self.match)
+        self.image_group = QGroupBox("찾을 이미지 (화면 전체에서 가장 비슷한 곳의 중심을 crash)")
+        igl = QVBoxLayout(self.image_group)
+        igl.addWidget(self.image_view)
+        igl.addLayout(img_buttons)
+        self._show_image()
+
         coord = QHBoxLayout()
         coord.addWidget(QLabel("X"))
         coord.addWidget(self.base_x)
@@ -201,9 +260,15 @@ class KeyCrashDialog(QDialog):
 
         form = QFormLayout()
         form.addRow("이름", self.name)
-        form.addRow("기준 시간대", self.base_hour)
-        form.addRow("기준 좌표", coord)
-        form.addRow("시간당 변동", delta)
+        form.addRow("찾는 방법", self.mode)
+        self.coord_form = QWidget()
+        cf = QFormLayout(self.coord_form)
+        cf.setContentsMargins(0, 0, 0, 0)
+        cf.addRow("기준 시간대", self.base_hour)
+        cf.addRow("기준 좌표", coord)
+        cf.addRow("시간당 변동", delta)
+        form.addRow(self.coord_form)
+        form.addRow(self.image_group)
         form.addRow("비교 대기시간", self.wait_ms)
         form.addRow("영역 크기 (N×N)", self.region)
         form.addRow("허용오차 (±)", self.tolerance)
@@ -217,10 +282,8 @@ class KeyCrashDialog(QDialog):
         gl = QVBoxLayout(group)
         gl.addWidget(self.preview)
 
-        self.test_btn = QPushButton("지금 테스트 (현재 시간대 좌표로 실제 crash)")
+        self.test_btn = QPushButton("지금 테스트 (실제로 한 번 crash)")
         self.test_btn.clicked.connect(self._test)
-        self._relay = _Relay(self)
-        self._relay.done.connect(self._test_done)
         self._moved: list[tuple[QWidget, QPoint]] = []
 
         box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -230,12 +293,15 @@ class KeyCrashDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.addLayout(form)
         lay.addWidget(group)
+        self.preview_group = group
         lay.addWidget(self.test_btn)
         lay.addWidget(box)
 
         for w in (self.base_hour, self.base_x, self.base_y, self.dx, self.dy):
             w.valueChanged.connect(self._refresh)
+        self.mode.currentIndexChanged.connect(self._on_mode)
         self._refresh()
+        self._on_mode()
 
     def _collect(self) -> KeyCrash:
         kc = copy.deepcopy(self.kc)
@@ -246,7 +312,59 @@ class KeyCrashDialog(QDialog):
         kc.wait_ms = self.wait_ms.value()
         kc.region = self.region.value()
         kc.tolerance = self.tolerance.value()
+        kc.mode = self.mode.currentData()
+        kc.match = self.match.value()
+        if self._image is not None:
+            from ..core.imagefind import encode_template
+            kc.image = encode_template(self._image)
         return kc
+
+    # 이미지 모드
+    def _on_mode(self) -> None:
+        image = self.mode.currentData() == "image"
+        self.coord_form.setVisible(not image)
+        self.preview_group.setVisible(not image)
+        self.image_group.setVisible(image)
+
+    def _show_image(self) -> None:
+        if self._image is None:
+            self.image_view.setText("이미지 없음 — '화면에서 캡처' 또는 '파일에서 불러오기'")
+            return
+        from .picker import rgb_to_qimage
+        pix = QPixmap.fromImage(rgb_to_qimage(self._image))
+        if pix.width() > 360 or pix.height() > 160:
+            pix = pix.scaled(360, 160, Qt.AspectRatioMode.KeepAspectRatio,
+                             Qt.TransformationMode.SmoothTransformation)
+        self.image_view.setPixmap(pix)
+        h, w = self._image.shape[:2]
+        self.image_view.setToolTip(f"{w}×{h} px")
+
+    def _set_image(self, rgb) -> None:
+        from ..core.imagefind import validate_template
+        problem = validate_template(rgb)
+        if problem:
+            QMessageBox.warning(self, "이미지", problem)
+            return
+        self._image = rgb
+        self._show_image()
+
+    def _capture(self) -> None:
+        from .picker import capture_region
+        rgb = capture_region(self.backend, [self, self.parentWidget()])
+        if rgb is not None:
+            self._set_image(rgb)
+
+    def _load_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "이미지 불러오기", "",
+                                              "이미지 (*.png *.jpg *.jpeg *.bmp)")
+        if not path:
+            return
+        img = QImage(path)
+        if img.isNull():
+            QMessageBox.warning(self, "이미지", "이미지를 열 수 없습니다.")
+            return
+        from .picker import qimage_to_rgb
+        self._set_image(qimage_to_rgb(img))
 
     def _refresh(self) -> None:
         kc = self._collect()
@@ -273,32 +391,36 @@ class KeyCrashDialog(QDialog):
         """현재 시간대 좌표로 핵심 crash 를 한 번 실제로 실행하고 결과를 보여준다 (결과 페이지에는 안 올림)."""
         kc = self._collect()
         hour = datetime.now().hour
-        x, y = kc.coord_at(hour)
-        if not is_on_screen(x, y, self.backend.screen_size()):
-            QMessageBox.warning(self, "테스트", f"{hour}시 좌표 ({x}, {y})가 화면 밖이라 crash 하지 않습니다.")
+        if kc.uses_image and kc.image is None:
+            QMessageBox.warning(self, "테스트", "먼저 찾을 이미지를 넣어 주세요.")
             return
+        if not kc.uses_image:
+            x, y = kc.coord_at(hour)
+            if not is_on_screen(x, y, self.backend.screen_size()):
+                QMessageBox.warning(self, "테스트", f"{hour}시 좌표 ({x}, {y})가 화면 밖이라 crash 하지 않습니다.")
+                return
         self.test_btn.setEnabled(False)
         # 클릭이 이 창에 막히지 않도록 편집 창들을 잠시 화면 밖으로 옮긴다 (숨기면 대화상자가 닫힘).
         self._moved = [(w, w.pos()) for w in (self, self.parentWidget()) if w is not None and w.isVisible()]
         for w, _ in self._moved:
             w.move(-32000, -32000)
 
-        def work():
+        backend = self.backend
+
+        def work() -> str:
             time.sleep(0.4)  # 창이 실제로 비켜날 시간
             try:
-                out = key_crash(self.backend, x, y, kc.wait_ms, kc.region, kc.tolerance)
+                x, y, how = resolve_target(kc, hour, backend)
+                out = key_crash(backend, x, y, kc.wait_ms, kc.region, kc.tolerance)
                 fmt = lambda c: "(" + ", ".join(f"{v:.0f}" for v in c) + ")"  # noqa: E731
-                msg = (f"{hour}시 좌표 ({x}, {y}) 에 crash 했습니다.\n\n"
+                msg = (f"({x}, {y}) 에 crash 했습니다 [{how}].\n\n"
                        f"클릭 전 평균 색: {fmt(out.before)}\n클릭 후 평균 색: {fmt(out.after)}\n"
                        f"허용오차 ±{kc.tolerance} → 결과: {out.label}")
             except Exception as e:  # noqa: BLE001
-                msg = f"{hour}시 좌표 ({x}, {y}) 테스트 실패: {e}"
-            try:
-                self._relay.done.emit(msg)
-            except RuntimeError:
-                pass
+                msg = f"테스트 실패: {e}"
+            return msg
 
-        threading.Thread(target=work, daemon=True, name="apphelper-key-test").start()
+        run_in_background(work, self._test_done)
 
     def _test_done(self, msg: str) -> None:
         for w, pos in self._moved:
@@ -314,16 +436,14 @@ class KeyCrashDialog(QDialog):
         if not kc.name:
             QMessageBox.warning(self, "Apphelper", "이름을 입력하세요.")
             return
+        if kc.uses_image and kc.image is None:
+            QMessageBox.warning(self, "Apphelper", "찾을 이미지를 넣어 주세요.")
+            return
         self.kc = kc
         self.accept()
 
 
 # ------------------------------------------------------------------ 설정
-
-class _Relay(QObject):
-    """작업 스레드의 결과를 GUI 스레드로 넘기는 신호."""
-    done = Signal(str)
-
 
 class SettingsDialog(QDialog):
     def __init__(self, settings: Settings, on_test: Callable[[Settings], str],
@@ -353,8 +473,6 @@ class SettingsDialog(QDialog):
 
         test = self.test_btn = QPushButton("결과 페이지 지금 갱신")
         test.clicked.connect(self._test)
-        self._relay = _Relay(self)
-        self._relay.done.connect(self._test_done)
         wipe = QPushButton("전체 데이터 삭제")
         wipe.setStyleSheet("color: #b91c1c;")
         wipe.clicked.connect(self._wipe)
@@ -387,17 +505,15 @@ class SettingsDialog(QDialog):
         self.test_btn.setText("갱신 중…")
         settings = self._collect()
 
-        def work():
-            try:
-                msg = self._on_test(settings)
-            except Exception as e:  # noqa: BLE001
-                msg = f"실패: {e}"
-            try:
-                self._relay.done.emit(msg)
-            except RuntimeError:  # 그 사이 설정 창이 닫힘
-                pass
+        on_test = self._on_test
 
-        threading.Thread(target=work, daemon=True, name="apphelper-test-publish").start()
+        def work() -> str:
+            try:
+                return on_test(settings)
+            except Exception as e:  # noqa: BLE001
+                return f"실패: {e}"
+
+        run_in_background(work, self._test_done)
 
     def _test_done(self, msg: str) -> None:
         self.test_btn.setEnabled(True)

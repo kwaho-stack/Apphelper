@@ -1,8 +1,8 @@
 """좌표 따기: 화면 전체를 덮는 반투명 창을 띄우고 클릭한 위치를 돌려준다."""
 from __future__ import annotations
 
-from PySide6.QtCore import QEventLoop, Qt, QTimer
-from PySide6.QtGui import QColor, QGuiApplication, QPainter
+from PySide6.QtCore import QEventLoop, QPoint, QRect, Qt, QTimer
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 from ..core.crash import ScreenBackend
@@ -80,3 +80,126 @@ def pick_coordinate(backend: ScreenBackend, hide: list[QWidget] | None = None) -
             w.setWindowOpacity(opacity)
         overlay.deleteLater()
     return overlay.result
+
+
+# ------------------------------------------------------------------ 영역 캡처 (이미지 모드)
+
+def rgb_to_qimage(rgb) -> QImage:
+    """(h, w, 3) uint8 배열 → QImage (복사본)."""
+    import numpy as np
+    rgb = np.ascontiguousarray(rgb, dtype=np.uint8)
+    h, w = rgb.shape[:2]
+    return QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+
+
+def qimage_to_rgb(img: QImage):
+    """QImage → (h, w, 3) uint8 배열."""
+    import numpy as np
+    img = img.convertToFormat(QImage.Format.Format_RGB888)
+    w, h, bpl = img.width(), img.height(), img.bytesPerLine()
+    buf = np.frombuffer(img.constBits(), dtype=np.uint8, count=bpl * h).reshape(h, bpl)
+    return buf[:, : w * 3].reshape(h, w, 3).copy()
+
+
+class _CaptureOverlay(QWidget):
+    """멈춘 화면 위에서 드래그해 영역을 고른다."""
+
+    def __init__(self, shot, loop: QEventLoop):
+        super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+                         | Qt.WindowType.Tool)
+        self.shot = shot
+        self.image = rgb_to_qimage(shot)
+        self.loop = loop
+        self.result = None
+        self._start: QPoint | None = None
+        self._rect = QRect()
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.setGeometry(QGuiApplication.primaryScreen().geometry())
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.drawImage(self.rect(), self.image)
+        p.fillRect(self.rect(), QColor(0, 0, 0, 110))
+        if not self._rect.isNull():
+            src = self._to_image(self._rect)
+            p.drawImage(self._rect, self.image, src)
+            p.setPen(QPen(QColor("#ef4444"), 2))
+            p.drawRect(self._rect)
+        p.setPen(QColor(255, 255, 255))
+        f = p.font()
+        f.setPointSize(14)
+        p.setFont(f)
+        p.drawText(self.rect().adjusted(0, 24, 0, 0), Qt.AlignmentFlag.AlignHCenter,
+                   "찾을 부분을 드래그하세요  (Esc 또는 오른쪽 클릭: 취소)")
+
+    def _to_image(self, r: QRect) -> QRect:
+        sx = self.image.width() / max(self.width(), 1)
+        sy = self.image.height() / max(self.height(), 1)
+        return QRect(round(r.x() * sx), round(r.y() * sy), round(r.width() * sx), round(r.height() * sy))
+
+    def mousePressEvent(self, e):
+        if e.button() != Qt.MouseButton.LeftButton:
+            self.close()
+            return
+        self._start = e.position().toPoint()
+        self._rect = QRect()
+
+    def mouseMoveEvent(self, e):
+        if self._start is not None:
+            self._rect = QRect(self._start, e.position().toPoint()).normalized()
+            self.update()
+
+    def mouseReleaseEvent(self, e):
+        if self._start is None or e.button() != Qt.MouseButton.LeftButton:
+            return
+        self._start = None
+        r = self._to_image(self._rect).intersected(self.image.rect())
+        if r.width() >= 2 and r.height() >= 2:
+            self.result = self.shot[r.y():r.y() + r.height(), r.x():r.x() + r.width()].copy()
+            self.close()
+        else:
+            self._rect = QRect()
+            self.update()
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key.Key_Escape:
+            self.close()
+
+    def closeEvent(self, e):
+        self.loop.quit()
+        super().closeEvent(e)
+
+
+def capture_region(backend: ScreenBackend, hide: list[QWidget] | None = None):
+    """화면을 멈춘 채로 영역을 드래그해 (h, w, 3) RGB 배열로 돌려준다. 취소하면 None.
+
+    캡처한 화면은 메모리에서만 쓰고 파일로 저장하지 않는다.
+    """
+    from ..core.imagefind import grab_screen
+
+    faded = [(w, w.windowOpacity()) for w in (hide or []) if w is not None and w.isVisible()]
+    for w, _ in faded:
+        w.setWindowOpacity(0.0)
+    try:
+        wait = QEventLoop()
+        QTimer.singleShot(300, wait.quit)  # 편집 창이 실제로 사라질 때까지
+        wait.exec()
+        shot = grab_screen(backend)
+        loop = QEventLoop()
+        overlay = _CaptureOverlay(shot, loop)
+        overlay.setWindowModality(Qt.WindowModality.ApplicationModal)
+        timer = QTimer(overlay)
+        timer.setSingleShot(True)
+        timer.timeout.connect(overlay.close)
+        timer.start(PICK_TIMEOUT_MS * 2)
+        overlay.showFullScreen()
+        overlay.raise_()
+        overlay.activateWindow()
+        if overlay.isVisible():
+            loop.exec()
+        result = overlay.result
+        overlay.deleteLater()
+        return result
+    finally:
+        for w, opacity in faded:
+            w.setWindowOpacity(opacity)
