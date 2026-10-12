@@ -447,7 +447,8 @@ class KeyCrashDialog(QDialog):
 
 class SettingsDialog(QDialog):
     def __init__(self, settings: Settings, on_test: Callable[[Settings], str],
-                 on_wipe: Callable[[], None], parent: QWidget | None = None):
+                 on_wipe: Callable[[], None], parent: QWidget | None = None,
+                 on_change_password: Callable[[QWidget], bool] | None = None):
         super().__init__(parent)
         self.setWindowTitle("설정")
         self.resize(460, 280)
@@ -478,6 +479,11 @@ class SettingsDialog(QDialog):
         wipe.clicked.connect(self._wipe)
         row = QHBoxLayout()
         row.addWidget(test)
+        if on_change_password is not None:
+            pw = QPushButton("비밀번호 변경")
+            pw.clicked.connect(lambda: on_change_password(self) and
+                               QMessageBox.information(self, "비밀번호", "비밀번호를 바꿨습니다."))
+            row.addWidget(pw)
         row.addStretch()
         row.addWidget(wipe)
 

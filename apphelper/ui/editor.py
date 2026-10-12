@@ -398,8 +398,10 @@ class EditorWindow(QMainWindow):
     def __init__(self, data: AppData, backend: ScreenBackend,
                  on_save: Callable[[AppData], None],
                  on_test_publish: Callable[[Settings], str],
-                 on_wipe: Callable[[], AppData]):
+                 on_wipe: Callable[[], AppData],
+                 on_change_password: Callable[[QWidget], bool] | None = None):
         super().__init__()
+        self._on_change_password = on_change_password
         self.setWindowTitle("Apphelper — 편집")
         self.resize(1100, 760)
         self.data = data.clone()
@@ -508,7 +510,8 @@ class EditorWindow(QMainWindow):
             self._on_save(self.data.clone())
 
     def open_settings(self):
-        dlg = SettingsDialog(self.data.settings, self._on_test_publish, self._wipe, self)
+        dlg = SettingsDialog(self.data.settings, self._on_test_publish, self._wipe, self,
+                             on_change_password=self._on_change_password)
         if dlg.exec():
             self.data.settings = dlg.settings
             self.changed(refresh=False)

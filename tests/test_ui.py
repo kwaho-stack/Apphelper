@@ -268,3 +268,74 @@ def test_background_job_after_window_closed_is_dropped(app, msgbox):
     w = QtWidgets.QWidget()  # 이후에도 Qt 가 정상 동작하는지
     w.show()
     app.processEvents()
+
+
+def test_wheel_does_not_change_values_but_scrolls(app):
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QWheelEvent
+
+    from apphelper.ui.guards import install_no_wheel
+
+    f = install_no_wheel(app)
+    try:
+        area = QtWidgets.QScrollArea()
+        inner = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(inner)
+        spin = QtWidgets.QSpinBox()
+        spin.setValue(5)
+        combo = QtWidgets.QComboBox()
+        combo.addItems(["a", "b", "c"])
+        lay.addWidget(spin)
+        lay.addWidget(combo)
+        lay.addSpacing(3000)
+        area.setWidget(inner)
+        area.resize(200, 200)
+        area.show()
+        app.processEvents()
+
+        def wheel(w):
+            ev = QWheelEvent(QPointF(5, 5), QPointF(w.mapToGlobal(QPoint(5, 5))), QPoint(0, 0),
+                             QPoint(0, -120), Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                             Qt.ScrollPhase.NoScrollPhase, False)
+            QtWidgets.QApplication.sendEvent(w, ev)
+
+        for w in (spin, combo):
+            w.setFocus()
+            wheel(w)
+        assert spin.value() == 5 and combo.currentIndex() == 0
+        assert area.verticalScrollBar().value() > 0  # 대신 바깥 화면이 스크롤된다
+    finally:
+        app.removeEventFilter(f)
+
+
+def test_tray_unlock_flow(app, tmp_path, monkeypatch):
+    import apphelper.app as appmod
+    from apphelper.core.model import Store
+
+    monkeypatch.setattr(appmod, "Store", lambda: Store(tmp_path / "data"))
+    answers = []
+    monkeypatch.setattr(appmod, "ask_new_password", lambda parent=None, first=True: answers.pop(0))
+    monkeypatch.setattr(appmod, "ask_password", lambda parent=None, retry=False: answers.pop(0))
+    t = appmod.TrayApp(app)
+    try:
+        answers[:] = [None]                # 처음: 비밀번호 설정 취소 → 안 열림
+        t.open_editor()
+        assert t.editor is None and not t.lock.is_set()
+
+        answers[:] = ["abcd"]              # 처음 1회 설정 → 열림
+        t.open_editor()
+        assert t.editor.isVisible() and t.lock.verify("abcd")
+
+        t.open_editor()                    # 이미 떠 있으면 묻지 않음
+        t.editor.close()
+        answers[:] = ["xx", "yy", "zz"]    # 세 번 틀리면 안 열림
+        t.open_editor()
+        assert not t.editor.isVisible() and answers == []
+
+        answers[:] = ["nope", "abcd"]      # 틀렸다가 맞히면 열림
+        t.open_editor()
+        assert t.editor.isVisible()
+    finally:
+        t.service.stop()
+        if t.editor:
+            t.editor.close()

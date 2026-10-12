@@ -12,7 +12,9 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from .backend import get_backend
 from .core.model import AppData, Settings, Store
 from .service import Service, load_page_template
+from .core.lock import PasswordLock
 from .ui.editor import EditorWindow
+from .ui.guards import ask_new_password, ask_password, install_no_wheel
 
 INSTANCE_NAME = "apphelper-single-instance"
 log = logging.getLogger("apphelper")
@@ -57,6 +59,7 @@ class TrayApp:
     def __init__(self, app: QApplication):
         self.app = app
         self.store = Store()
+        self.lock = PasswordLock(self.store.data_dir)
         self.first_run = not self.store.exists()
         self.data = self.store.load()
         configure_logging(self.store, self.data.settings.debug_log)
@@ -165,10 +168,38 @@ class TrayApp:
         self._update_tray()
 
     # ------------------------------------------------------------ 편집 화면
+    def _unlock(self) -> bool:
+        """편집 화면을 열기 전 비밀번호 확인. 처음이면 비밀번호를 정하게 한다."""
+        if not self.lock.is_set():
+            pw = ask_new_password(first=True)
+            if pw is None:
+                return False
+            self.lock.set(pw)
+            return True
+        retry = False
+        for _ in range(3):
+            pw = ask_password(retry=retry)
+            if pw is None:
+                return False
+            if self.lock.verify(pw):
+                return True
+            retry = True
+        return False
+
+    def change_password(self, parent=None) -> bool:
+        pw = ask_new_password(parent, first=False)
+        if pw is None:
+            return False
+        self.lock.set(pw)
+        return True
+
     def open_editor(self):
+        # 이미 떠 있는 편집 화면을 앞으로 가져오는 것은 그대로, 닫혀 있던 화면을 열 때만 잠금 확인
+        if not (self.editor and self.editor.isVisible()) and not self._unlock():
+            return
         if self.editor is None:
             self.editor = EditorWindow(self.data, self.backend, self._on_editor_save,
-                                       self._test_publish, self._wipe)
+                                       self._test_publish, self._wipe, self.change_password)
         self.editor.show()
         self.editor.setWindowState(self.editor.windowState() & ~Qt.WindowState.WindowMinimized)
         self.editor.raise_()
@@ -213,6 +244,7 @@ def main() -> int:
     app.setApplicationName("Apphelper")
     # Windows 11 기본 스타일은 스핀박스 화살표가 넓어 숫자가 가려지므로 Fusion 으로 통일한다.
     app.setStyle("Fusion")
+    install_no_wheel(app)
     app.setQuitOnLastWindowClosed(False)
 
     # 이미 실행 중이면 그쪽 편집 화면을 열고 끝낸다.
