@@ -39,6 +39,7 @@ class Service:
         self.transport = transport
         self.now = now
         self.results = Results()
+        self.last_status = ""  # 마지막 슬롯 실행 결과 (트레이 툴팁·편집 화면 표시용)
         self._remote_loaded = False
         self._publish_lock = threading.Lock()
         self._publish_pending = threading.Event()
@@ -72,6 +73,11 @@ class Service:
         result = run_slot(data, slot, self.backend, sleep=self.scheduler.sleep,
                           should_stop=lambda: self.scheduler.stopping)
         self.results.record(when, result.ok, result.key_results)
+        if result.ok:
+            detail = " · ".join(result.key_results) or "완료"
+        else:
+            detail = f"실패: {result.error}"
+        self.last_status = f"{when.month}/{when.day} {when.hour}시 {when.minute}분 — {detail}"
         self.request_publish()
 
     def _on_hour(self, now: datetime) -> None:

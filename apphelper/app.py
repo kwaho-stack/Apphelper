@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
@@ -81,6 +81,10 @@ class TrayApp:
         self.tray.activated.connect(self._on_activated)
         self._update_tray()
 
+        self._status_timer = QTimer()
+        self._status_timer.timeout.connect(self._refresh_status)
+        self._status_timer.start(2000)
+
         self.server = QLocalServer()
         QLocalServer.removeServer(INSTANCE_NAME)
         self.server.listen(INSTANCE_NAME)
@@ -117,7 +121,10 @@ class TrayApp:
         self.toggle_action.setText("실행" if paused else "일시정지")
         self.tray.setIcon(make_icon(paused))
         profile = (self.editor.data if self.editor else self.data).profile
-        self.tray.setToolTip(f"Apphelper — {'일시정지' if paused else '실행 중'} [{profile}]")
+        tip = f"Apphelper — {'일시정지' if paused else '실행 중'} [{profile}]"
+        if self.service.last_status:
+            tip += f"\n마지막 실행: {self.service.last_status}"
+        self.tray.setToolTip(tip)
 
     def _build_profile_menu(self):
         self.profile_menu.clear()
@@ -138,6 +145,14 @@ class TrayApp:
             data.switch_profile(name)
             self._on_editor_save(data)
         self._update_tray()
+
+    def _refresh_status(self):
+        status = self.service.last_status
+        if status != getattr(self, "_shown_status", None):
+            self._shown_status = status
+            self._update_tray()
+        if self.editor:
+            self.editor.set_last_run(status)
 
     def toggle_running(self):
         if self.editor:

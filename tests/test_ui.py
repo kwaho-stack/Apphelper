@@ -89,3 +89,42 @@ def test_settings_test_publish_does_not_block(app):
     dlg._test()
     assert time.monotonic() - start < 0.2  # 버튼을 눌러도 화면이 바로 돌아온다
     assert not dlg.test_btn.isEnabled()
+
+
+def test_key_crash_dialog_test_button_clicks(app, monkeypatch):
+    from datetime import datetime
+
+    from apphelper.ui.dialogs import KeyCrashDialog
+
+    backend = DummyBackend()
+    clicks = []
+    backend.click = lambda x, y: clicks.append((x, y))
+    kc = KeyCrash("k", base_hour=datetime.now().hour, base_x=50, base_y=60, wait_ms=0)
+    dlg = KeyCrashDialog(kc, backend)
+    messages = []
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information", staticmethod(lambda *a: messages.append(a[2])))
+    dlg.show()
+    pos = dlg.pos()
+    dlg._test()
+    deadline = time.monotonic() + 5
+    while not messages and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+    assert clicks == [(50, 60)]
+    assert "안변함!" in messages[0]
+    assert dlg.pos() == pos and dlg.test_btn.isEnabled()
+
+
+def test_key_crash_clicks_even_if_color_read_fails():
+    from apphelper.core.crash import key_crash
+
+    backend = DummyBackend()
+    clicks = []
+    backend.click = lambda x, y: clicks.append((x, y))
+
+    def broken(*a):
+        raise OSError("BitBlt 실패")
+    backend.grab = broken
+    with pytest.raises(OSError):
+        key_crash(backend, 5, 5, wait_ms=0)
+    assert clicks == [(5, 5)]

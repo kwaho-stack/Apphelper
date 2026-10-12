@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Callable
 
 from PySide6.QtCore import QMimeData, QPoint, QSize, Qt, QTimer, Signal
@@ -137,7 +138,8 @@ class LibraryPanel(QWidget):
             self.editor.changed()
 
     def new_key(self):
-        dlg = KeyCrashDialog(KeyCrash(f"핵심 crash {len(self.editor.data.key_crashes) + 1}"),
+        dlg = KeyCrashDialog(KeyCrash(f"핵심 crash {len(self.editor.data.key_crashes) + 1}",
+                                      base_hour=datetime.now().hour),
                              self.editor.backend, self.editor)
         if dlg.exec():
             self.editor.data.key_crashes.append(dlg.kc)
@@ -428,8 +430,11 @@ class EditorWindow(QMainWindow):
         settings_btn = QPushButton("설정")
         settings_btn.clicked.connect(self.open_settings)
         self.status = QLabel()
+        self.last_run = QLabel()
+        self.last_run.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         bottom = QHBoxLayout()
         bottom.addWidget(self.status, 1)
+        bottom.addWidget(self.last_run)
         bottom.addWidget(settings_btn)
 
         self.profile_box = QComboBox()
@@ -457,6 +462,10 @@ class EditorWindow(QMainWindow):
         cl.addLayout(bottom)
         self.setCentralWidget(central)
         self.refresh()
+
+    def set_last_run(self, text: str):
+        self.last_run.setText(f"마지막 실행: {text}" if text else "")
+        self.last_run.setStyleSheet("color: #b91c1c;" if "실패" in text else "")
 
     def set_clipboard(self, blocks: list[BlockRef]):
         self.clipboard = [BlockRef(b.kind, b.ref) for b in blocks]

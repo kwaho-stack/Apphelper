@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import copy
 import threading
+import time
+from datetime import datetime
 from typing import Callable
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, QPoint, Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox, QHBoxLayout,
@@ -13,7 +15,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from ..core.crash import ScreenBackend, is_on_screen
+from ..core.crash import ScreenBackend, is_on_screen, key_crash
 from ..core.model import BasicAction, KeyCrash, Settings, Step
 from .picker import pick_coordinate
 
@@ -215,6 +217,12 @@ class KeyCrashDialog(QDialog):
         gl = QVBoxLayout(group)
         gl.addWidget(self.preview)
 
+        self.test_btn = QPushButton("지금 테스트 (현재 시간대 좌표로 실제 crash)")
+        self.test_btn.clicked.connect(self._test)
+        self._relay = _Relay(self)
+        self._relay.done.connect(self._test_done)
+        self._moved: list[tuple[QWidget, QPoint]] = []
+
         box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         box.accepted.connect(self._accept)
         box.rejected.connect(self.reject)
@@ -222,6 +230,7 @@ class KeyCrashDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.addLayout(form)
         lay.addWidget(group)
+        lay.addWidget(self.test_btn)
         lay.addWidget(box)
 
         for w in (self.base_hour, self.base_x, self.base_y, self.dx, self.dy):
@@ -259,6 +268,46 @@ class KeyCrashDialog(QDialog):
         if pt:
             self.base_x.setValue(pt[0])
             self.base_y.setValue(pt[1])
+
+    def _test(self) -> None:
+        """현재 시간대 좌표로 핵심 crash 를 한 번 실제로 실행하고 결과를 보여준다 (결과 페이지에는 안 올림)."""
+        kc = self._collect()
+        hour = datetime.now().hour
+        x, y = kc.coord_at(hour)
+        if not is_on_screen(x, y, self.backend.screen_size()):
+            QMessageBox.warning(self, "테스트", f"{hour}시 좌표 ({x}, {y})가 화면 밖이라 crash 하지 않습니다.")
+            return
+        self.test_btn.setEnabled(False)
+        # 클릭이 이 창에 막히지 않도록 편집 창들을 잠시 화면 밖으로 옮긴다 (숨기면 대화상자가 닫힘).
+        self._moved = [(w, w.pos()) for w in (self, self.parentWidget()) if w is not None and w.isVisible()]
+        for w, _ in self._moved:
+            w.move(-32000, -32000)
+
+        def work():
+            time.sleep(0.4)  # 창이 실제로 비켜날 시간
+            try:
+                out = key_crash(self.backend, x, y, kc.wait_ms, kc.region, kc.tolerance)
+                fmt = lambda c: "(" + ", ".join(f"{v:.0f}" for v in c) + ")"  # noqa: E731
+                msg = (f"{hour}시 좌표 ({x}, {y}) 에 crash 했습니다.\n\n"
+                       f"클릭 전 평균 색: {fmt(out.before)}\n클릭 후 평균 색: {fmt(out.after)}\n"
+                       f"허용오차 ±{kc.tolerance} → 결과: {out.label}")
+            except Exception as e:  # noqa: BLE001
+                msg = f"{hour}시 좌표 ({x}, {y}) 테스트 실패: {e}"
+            try:
+                self._relay.done.emit(msg)
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=work, daemon=True, name="apphelper-key-test").start()
+
+    def _test_done(self, msg: str) -> None:
+        for w, pos in self._moved:
+            w.move(pos)
+        self._moved = []
+        self.test_btn.setEnabled(True)
+        self.raise_()
+        self.activateWindow()
+        QMessageBox.information(self, "핵심 crash 테스트", msg)
 
     def _accept(self) -> None:
         kc = self._collect()

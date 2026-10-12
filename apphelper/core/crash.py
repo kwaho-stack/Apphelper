@@ -109,8 +109,15 @@ def key_crash(
     tolerance: float = 10,
     sleep: Callable[[float], None] = time.sleep,
 ) -> KeyCrashOutcome:
-    """핵심 crash: 색상 읽기 → crash → 대기 → 다시 읽기 → 비교."""
-    before = average_color(backend, x, y, size)
+    """핵심 crash: 색상 읽기 → crash → 대기 → 다시 읽기 → 비교.
+
+    클릭 전 색상을 못 읽어도 crash 는 반드시 실행하고, 그 다음에 오류를 알린다.
+    """
+    try:
+        before = average_color(backend, x, y, size)
+    except Exception:
+        crash(backend, x, y)
+        raise
     crash(backend, x, y)
     sleep(max(wait_ms, 0) / 1000)
     after = average_color(backend, x, y, size)
