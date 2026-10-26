@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QMimeData, QPoint, QSize, Qt, QTimer, Signal
@@ -15,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from ..core.crash import ScreenBackend, is_on_screen
 from ..core.model import AppData, BasicAction, BlockRef, KeyCrash, Settings, Slot
-from .dialogs import BasicActionDialog, KeyCrashDialog, SettingsDialog
+from .dialogs import BasicActionDialog, KeyCrashDialog, SettingsDialog, run_in_background
 
 MIME = "application/x-apphelper-block"
 BASIC_COLOR = QColor("#dbeafe")
@@ -331,6 +333,11 @@ class SlotRow(QWidget):
         lay.addWidget(self.end)
         lay.addWidget(QLabel("분"))
         lay.addWidget(self.blocks, 1)
+        self.debug_label = QLabel("디버그")
+        self.debug_label.setStyleSheet("color: white; background: #7c3aed; border-radius: 4px; padding: 1px 4px;")
+        self.debug_label.setToolTip("상세 디버그: 이 시간대 실행 때 매 동작마다 스크린샷을 저장합니다")
+        self.debug_label.setFixedHeight(20)
+        lay.addWidget(self.debug_label, 0, Qt.AlignmentFlag.AlignVCenter)
         lay.addWidget(more)
 
         self.enabled.toggled.connect(self._on_fields)
@@ -343,6 +350,16 @@ class SlotRow(QWidget):
 
     def add_slot_actions(self, menu: QMenu):
         ed = self.editor
+        trial = QAction("지금 시범 작동 (실제로 한 번 실행)", menu)
+        trial.setEnabled(bool(self.slot.blocks) and ed.can_trial_run)
+        trial.triggered.connect(lambda: ed.trial_run(self.slot.hour))
+        menu.addAction(trial)
+        debug = QAction("상세 디버그 (매 동작마다 스크린샷)", menu)
+        debug.setCheckable(True)
+        debug.setChecked(self.slot.debug)
+        debug.toggled.connect(self._set_debug)
+        menu.addAction(debug)
+        menu.addSeparator()
         menu.addAction("이 시간대 복사", lambda: ed.set_clipboard(list(self.slot.blocks)))
         paste_over = QAction("붙여넣기 (덮어쓰기)", menu)
         paste_append = QAction("붙여넣기 (뒤에 추가)", menu)
@@ -361,6 +378,10 @@ class SlotRow(QWidget):
 
     def _clear(self):
         self.slot.blocks = []
+        self.editor.changed()
+
+    def _set_debug(self, on: bool):
+        self.slot.debug = on
         self.editor.changed()
 
     def _on_fields(self):
@@ -385,6 +406,7 @@ class SlotRow(QWidget):
         self.start.setValue(self.slot.minute_start)
         self.end.setValue(self.slot.minute_end)
         self._loading = False
+        self.debug_label.setVisible(self.slot.debug)
         self.blocks.refresh()
 
 
@@ -399,9 +421,14 @@ class EditorWindow(QMainWindow):
                  on_save: Callable[[AppData], None],
                  on_test_publish: Callable[[Settings], str],
                  on_wipe: Callable[[], AppData],
-                 on_change_password: Callable[[QWidget], bool] | None = None):
+                 on_change_password: Callable[[QWidget], bool] | None = None,
+                 on_trial_run: Callable[[AppData, int], str] | None = None,
+                 shots_dir: Path | None = None):
         super().__init__()
         self._on_change_password = on_change_password
+        self._on_trial_run = on_trial_run
+        self.shots_dir = shots_dir
+        self._moved: list[tuple[QWidget, QPoint]] = []
         self.setWindowTitle("Apphelper — 편집")
         self.resize(1100, 760)
         self.data = data.clone()
@@ -473,6 +500,38 @@ class EditorWindow(QMainWindow):
         self.setCentralWidget(central)
         self.refresh()
 
+    # ------------------------------------------------------------ 시범 작동
+    @property
+    def can_trial_run(self) -> bool:
+        return self._on_trial_run is not None and not self._moved
+
+    def trial_run(self, hour: int):
+        """시간대 하나를 지금 실제로 한 번 실행한다. 클릭이 막히지 않게 편집 창을 잠시 비켜 둔다."""
+        if not self.can_trial_run:
+            return
+        self.flush()
+        data = self.data.clone()
+        run = self._on_trial_run
+        self._moved = [(self, self.pos())]
+        self.move(-32000, -32000)
+
+        def work() -> str:
+            time.sleep(0.4)  # 창이 실제로 비켜날 시간
+            try:
+                return run(data, hour)
+            except Exception as e:  # noqa: BLE001
+                return f"{hour}시 시범 작동 실패: {e}"
+
+        run_in_background(work, self._trial_done)
+
+    def _trial_done(self, msg: str):
+        for w, pos in self._moved:
+            w.move(pos)
+        self._moved = []
+        self.raise_()
+        self.activateWindow()
+        QMessageBox.information(self, "시범 작동", msg)
+
     def set_last_run(self, text: str):
         self.last_run.setText(f"마지막 실행: {text}" if text else "")
         self.last_run.setStyleSheet("color: #b91c1c;" if "실패" in text else "")
@@ -511,7 +570,7 @@ class EditorWindow(QMainWindow):
 
     def open_settings(self):
         dlg = SettingsDialog(self.data.settings, self._on_test_publish, self._wipe, self,
-                             on_change_password=self._on_change_password)
+                             on_change_password=self._on_change_password, shots_dir=self.shots_dir)
         if dlg.exec():
             self.data.settings = dlg.settings
             self.changed(refresh=False)

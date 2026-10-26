@@ -37,12 +37,20 @@ class SlotResult:
     error: str = ""
 
 
+# observer(event, x, y, note) — 실행 중 동작을 알려 주는 콜백 (스크린샷 저장 등에 사용)
+#   "crash"       : 기본동작 crash 직후
+#   "key_before"  : 핵심 crash 클릭 직전
+#   "key_after"   : 핵심 crash 대기 후 판정 직후 (note = 변함!/안변함!)
+Observer = Callable[[str, int, int, str], None]
+
+
 def run_slot(
     data: AppData,
     slot: Slot,
     backend: ScreenBackend,
     sleep: Callable[[float], None] = time.sleep,
     should_stop: Callable[[], bool] = lambda: False,
+    observer: Observer | None = None,
 ) -> SlotResult:
     """슬롯의 블록을 순서대로 실행한다. 한 단계라도 실패하면 즉시 멈추고 실패로 돌려준다."""
     key_results: list[str] = []
@@ -59,6 +67,8 @@ def run_slot(
                         raise SlotError("실행이 중단되었습니다")
                     if step.kind == "crash":
                         crash(backend, step.x, step.y)
+                        if observer:
+                            observer("crash", step.x, step.y, action.name)
                     else:
                         sleep(max(step.ms, 0) / 1000)
             else:
@@ -66,7 +76,11 @@ def run_slot(
                 if kc is None:
                     raise SlotError(f"핵심 crash {block.ref} 이(가) 없습니다")
                 x, y, _ = resolve_target(kc, slot.hour, backend)
+                if observer:
+                    observer("key_before", x, y, kc.name)
                 outcome = key_crash(backend, x, y, kc.wait_ms, kc.region, kc.tolerance, sleep=sleep)
+                if observer:
+                    observer("key_after", x, y, outcome.label)
                 log.debug("핵심 crash %s @(%d,%d) %s → %s : %s", kc.name, x, y,
                           outcome.before, outcome.after, outcome.label)
                 key_results.append(outcome.label)

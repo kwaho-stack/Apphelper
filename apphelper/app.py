@@ -65,7 +65,8 @@ class TrayApp:
         configure_logging(self.store, self.data.settings.debug_log)
         self.backend = get_backend()
         self.page_html = load_page_template()
-        self.service = Service(self.data, self.backend, self.page_html)
+        self.shots_dir = self.store.data_dir / "screenshots"
+        self.service = Service(self.data, self.backend, self.page_html, shots_dir=self.shots_dir)
         self.editor: EditorWindow | None = None
 
         self.tray = QSystemTrayIcon(make_icon(self.service.paused))
@@ -123,11 +124,8 @@ class TrayApp:
         paused = self.service.paused
         self.toggle_action.setText("실행" if paused else "일시정지")
         self.tray.setIcon(make_icon(paused))
-        profile = (self.editor.data if self.editor else self.data).profile
-        tip = f"Apphelper — {'일시정지' if paused else '실행 중'} [{profile}]"
-        if self.service.last_status:
-            tip += f"\n마지막 실행: {self.service.last_status}"
-        self.tray.setToolTip(tip)
+        # 트레이 툴팁에는 실행 시각이나 결과 같은 정보를 보이지 않는다 (편집 화면에서만 확인)
+        self.tray.setToolTip("Apphelper")
 
     def _build_profile_menu(self):
         self.profile_menu.clear()
@@ -151,9 +149,6 @@ class TrayApp:
 
     def _refresh_status(self):
         status = self.service.last_status
-        if status != getattr(self, "_shown_status", None):
-            self._shown_status = status
-            self._update_tray()
         if self.editor:
             self.editor.set_last_run(status)
 
@@ -199,7 +194,8 @@ class TrayApp:
             return
         if self.editor is None:
             self.editor = EditorWindow(self.data, self.backend, self._on_editor_save,
-                                       self._test_publish, self._wipe, self.change_password)
+                                       self._test_publish, self._wipe, self.change_password,
+                                       on_trial_run=self.service.trial_run, shots_dir=self.shots_dir)
         self.editor.show()
         self.editor.setWindowState(self.editor.windowState() & ~Qt.WindowState.WindowMinimized)
         self.editor.raise_()

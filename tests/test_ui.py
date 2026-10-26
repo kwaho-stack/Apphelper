@@ -339,3 +339,71 @@ def test_tray_unlock_flow(app, tmp_path, monkeypatch):
         t.service.stop()
         if t.editor:
             t.editor.close()
+
+
+def test_tray_tooltip_has_no_run_info(app, tmp_path, monkeypatch):
+    import apphelper.app as appmod
+    from apphelper.core.model import Store
+
+    monkeypatch.setattr(appmod, "Store", lambda: Store(tmp_path / "data"))
+    t = appmod.TrayApp(app)
+    try:
+        t.service.last_status = "10/26 21시 10분 — 변함!"
+        t._refresh_status()
+        t.toggle_running()
+        assert t.tray.toolTip() == "Apphelper"
+    finally:
+        t.service.stop()
+
+
+def test_editor_slot_menu_trial_run_and_debug(app, monkeypatch):
+    import apphelper.ui.editor as editor_mod
+    from apphelper.core.model import AppData, BasicAction, BlockRef, Step
+    from apphelper.ui.editor import EditorWindow
+
+    infos = []
+
+    class MB:
+        @staticmethod
+        def information(_p, _t, text, *a):
+            infos.append(text)
+    monkeypatch.setattr(editor_mod, "QMessageBox", MB)
+
+    d = AppData()
+    a = BasicAction("열기", [Step("crash", x=1, y=1)])
+    d.actions.append(a)
+    d.slots[7].blocks = [BlockRef("basic", a.id)]
+    calls = []
+    saved = []
+
+    def trial(data, hour):
+        calls.append((hour, len(data.slots[hour].blocks)))
+        return f"{hour}시 시범 작동 완료"
+
+    ed = EditorWindow(d, DummyBackend(), saved.append, lambda s: "", lambda: AppData(),
+                      on_trial_run=trial)
+    ed.show()
+    row = ed.rows[7]
+    menu = QtWidgets.QMenu()
+    row.add_slot_actions(menu)
+    acts = {act.text(): act for act in menu.actions()}
+    assert acts["지금 시범 작동 (실제로 한 번 실행)"].isEnabled()
+
+    acts["상세 디버그 (매 동작마다 스크린샷)"].setChecked(True)
+    assert ed.data.slots[7].debug and row.debug_label.isVisibleTo(ed)
+
+    pos = ed.pos()
+    acts["지금 시범 작동 (실제로 한 번 실행)"].trigger()
+    deadline = time.monotonic() + 5
+    while not infos and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+    assert calls == [(7, 1)] and infos == ["7시 시범 작동 완료"]
+    assert ed.pos() == pos and ed.can_trial_run
+
+    empty = QtWidgets.QMenu()
+    ed.rows[8].add_slot_actions(empty)
+    assert not {act.text(): act for act in empty.actions()}["지금 시범 작동 (실제로 한 번 실행)"].isEnabled()
+    ed.flush()
+    assert saved and saved[-1].slots[7].debug
+    ed.close()

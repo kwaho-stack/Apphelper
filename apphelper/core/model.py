@@ -119,6 +119,7 @@ class Slot:
     minute_start: int = 0
     minute_end: int = 59
     blocks: list[BlockRef] = field(default_factory=list)
+    debug: bool = False  # 상세 디버그: 이 시간대 실행 때 매 동작마다 스크린샷 저장
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -127,6 +128,7 @@ class Slot:
             "minute_start": self.minute_start,
             "minute_end": self.minute_end,
             "blocks": [b.to_dict() for b in self.blocks],
+            "debug": self.debug,
         }
 
     @classmethod
@@ -137,6 +139,7 @@ class Slot:
             minute_start=int(d.get("minute_start", 0)),
             minute_end=int(d.get("minute_end", 59)),
             blocks=[BlockRef.from_dict(b) for b in d.get("blocks", [])],
+            debug=bool(d.get("debug", False)),
         )
 
 

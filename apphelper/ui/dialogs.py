@@ -7,11 +7,12 @@ import threading
 import time
 import weakref
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 import shiboken6
-from PySide6.QtCore import QPoint, Qt, QTimer
-from PySide6.QtGui import QBrush, QColor, QImage, QPixmap
+from PySide6.QtCore import QPoint, Qt, QTimer, QUrl
+from PySide6.QtGui import QBrush, QColor, QDesktopServices, QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
     QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox,
@@ -59,6 +60,11 @@ def run_in_background(fn: Callable[[], str], on_done: Callable[[str], None]) -> 
         cb(msg)
 
     QTimer.singleShot(50, poll)
+
+
+def _open_folder(path: Path) -> None:
+    Path(path).mkdir(parents=True, exist_ok=True)
+    QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
 
 # ------------------------------------------------------------------ 기본동작
@@ -448,7 +454,8 @@ class KeyCrashDialog(QDialog):
 class SettingsDialog(QDialog):
     def __init__(self, settings: Settings, on_test: Callable[[Settings], str],
                  on_wipe: Callable[[], None], parent: QWidget | None = None,
-                 on_change_password: Callable[[QWidget], bool] | None = None):
+                 on_change_password: Callable[[QWidget], bool] | None = None,
+                 shots_dir: Path | None = None):
         super().__init__(parent)
         self.setWindowTitle("설정")
         self.resize(460, 280)
@@ -484,6 +491,11 @@ class SettingsDialog(QDialog):
             pw.clicked.connect(lambda: on_change_password(self) and
                                QMessageBox.information(self, "비밀번호", "비밀번호를 바꿨습니다."))
             row.addWidget(pw)
+        if shots_dir is not None:
+            shots = QPushButton("스크린샷 폴더 열기")
+            shots.setToolTip(str(shots_dir))
+            shots.clicked.connect(lambda: _open_folder(shots_dir))
+            row.addWidget(shots)
         row.addStretch()
         row.addWidget(wipe)
 
