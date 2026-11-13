@@ -66,7 +66,9 @@ class TrayApp:
         self.backend = get_backend()
         self.page_html = load_page_template()
         self.shots_dir = self.store.data_dir / "screenshots"
-        self.service = Service(self.data, self.backend, self.page_html, shots_dir=self.shots_dir)
+        from .screenshots import capture_image
+        self.service = Service(self.data, self.backend, self.page_html, shots_dir=self.shots_dir,
+                               capture_image=lambda: capture_image(self.backend))
         self.editor: EditorWindow | None = None
 
         self.tray = QSystemTrayIcon(make_icon(self.service.paused))

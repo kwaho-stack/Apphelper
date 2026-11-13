@@ -76,19 +76,36 @@ class Publisher:
         content = base64.b64decode(info.get("content", "")).decode("utf-8")
         return json.loads(content) if content else None
 
-    def publish(self, results: dict[str, Any]) -> str:
-        """페이지와 결과를 부모 없는 커밋 1개로 만들어 gh-pages 를 덮어쓴다. 커밋 sha 반환."""
+    def fetch_remote_request(self) -> dict[str, Any] | None:
+        """페이지가 apphelper-remote 브랜치에 남긴 요청(request.json). 없으면 None."""
+        from .remote import REMOTE_BRANCH, REQUEST_FILE, decode_contents
+        try:
+            info = self._call("GET", f"/contents/{REQUEST_FILE}?ref={REMOTE_BRANCH}")
+        except HttpError as e:
+            if e.status == 404:
+                return None
+            raise
+        return decode_contents(info)
+
+    def publish(self, results: dict[str, Any], binaries: dict[str, bytes] | None = None) -> str:
+        """페이지와 결과(그리고 binaries 의 파일들)를 부모 없는 커밋 1개로 만들어 gh-pages 를 덮어쓴다.
+
+        커밋 sha 반환.
+        """
         files = {
             "index.html": self.page_html,
             RESULTS_FILE: json.dumps(results, ensure_ascii=False, separators=(",", ":")),
             ".nojekyll": "",
         }
-        tree = self._call("POST", "/git/trees", {
-            "tree": [
-                {"path": path, "mode": "100644", "type": "blob", "content": content}
-                for path, content in files.items()
-            ]
-        })
+        entries: list[dict[str, Any]] = [
+            {"path": path, "mode": "100644", "type": "blob", "content": content}
+            for path, content in files.items()
+        ]
+        for path, data in (binaries or {}).items():
+            blob = self._call("POST", "/git/blobs", {
+                "content": base64.b64encode(data).decode("ascii"), "encoding": "base64"})
+            entries.append({"path": path, "mode": "100644", "type": "blob", "sha": blob["sha"]})
+        tree = self._call("POST", "/git/trees", {"tree": entries})
         commit = self._call("POST", "/git/commits", {
             "message": NEUTRAL_MESSAGE,
             "tree": tree["sha"],

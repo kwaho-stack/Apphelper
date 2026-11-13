@@ -148,3 +148,19 @@ def test_slot_debug_roundtrip():
     s = Slot(5, debug=True)
     assert Slot.from_dict(s.to_dict()).debug is True
     assert Slot.from_dict({"hour": 5}).debug is False
+
+
+def test_capture_image_is_jpeg_and_scaled():
+    from apphelper.screenshots import capture_image
+
+    class Big(Screen):
+        def screen_size(self):
+            return 2000, 1000
+
+        def grab_array(self, left, top, w, h):
+            return np.full((h, w, 3), 120, np.uint8)
+
+    data, mime = capture_image(Big(False), max_width=1600)
+    assert mime == "image/jpeg" and data[:3] == b"\xff\xd8\xff"
+    img = QImage.fromData(data)
+    assert (img.width(), img.height()) == (1600, 800)

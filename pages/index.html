@@ -43,6 +43,21 @@
   .fail { color: var(--fail); background: var(--fail-bg); }
   .wait { color: var(--wait); background: var(--wait-bg); }
   .empty { color: var(--muted); padding: 24px 16px; text-align: center; }
+  h2 { font-size: 16px; margin: 28px 0 8px; }
+  .remote { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .btn { border: 1px solid var(--line); background: var(--card); color: var(--text); border-radius: 8px;
+         padding: 8px 12px; font: inherit; font-size: 14px; cursor: pointer; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .btn:disabled { opacity: .55; cursor: default; }
+  .input { flex: 1 1 180px; min-width: 0; border: 1px solid var(--line); background: var(--bg); color: var(--text);
+           border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 14px; }
+  .note { color: var(--muted); font-size: 13px; margin: 0; }
+  .status { font-size: 13px; margin: 0; min-height: 1.2em; }
+  .status.err { color: var(--fail); }
+  .shot { width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--line); display: block; }
+  .shot-at { color: var(--muted); font-size: 13px; margin: 0; font-variant-numeric: tabular-nums; }
+  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
@@ -52,6 +67,27 @@
   <div class="days" id="days" role="group" aria-label="날짜 선택"></div>
   <p class="summary" id="summary"></p>
   <div class="card"><ul id="list"></ul></div>
+
+  <h2>PC 화면</h2>
+  <div class="card remote">
+    <div id="tokenBox" hidden>
+      <p class="note">PC 의 Apphelper 설정에 넣은 것과 <b>같은 GitHub 토큰</b>을 넣으세요.
+        이 브라우저에만 저장되며, 화면 이미지는 이 토큰으로만 열 수 있게 암호화되어 있습니다.</p>
+      <div class="row" style="margin-top:8px">
+        <input class="input" id="tokenInput" type="password" autocomplete="off" placeholder="github_pat_...">
+        <button class="btn primary" id="tokenSave" type="button">저장</button>
+      </div>
+    </div>
+    <div class="row" id="actions" hidden>
+      <button class="btn primary" id="shotBtn" type="button">지금 화면 보기</button>
+      <button class="btn" id="tokenChange" type="button">토큰 변경</button>
+    </div>
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+    <p class="shot-at" id="shotAt" hidden></p>
+    <img class="shot" id="shotImg" alt="PC 화면" hidden>
+    <p class="note">PC 앱 설정에서 <b>결과 페이지에서 스크린샷 요청 허용</b>을 켜 두어야 합니다.
+      PC 가 30초마다 확인하므로 보통 1분 안에 나타납니다.</p>
+  </div>
 </main>
 <script>
 (function () {
@@ -177,15 +213,207 @@
 
   var loaded = false;
 
+  // ------------------------------------------------------------------ PC 화면 (원격 스크린샷)
+  var TOKEN_KEY = "apphelper.token";
+  var NEUTRAL = { name: "update", email: "update@localhost", date: "2000-01-01T00:00:00Z" };
+  var shownShotId = null;
+  var waitingFor = null;
+
+  function $(id) { return document.getElementById(id); }
+
+  function getToken() {
+    try { return localStorage.getItem(TOKEN_KEY) || ""; } catch (e) { return memToken; }
+  }
+  var memToken = "";
+  function setToken(t) {
+    memToken = t;
+    try { if (t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY); } catch (e) {}
+  }
+
+  // 결과를 올린 레포 (results.json 의 repo, 없으면 주소 owner.github.io/repo 에서)
+  function repoName() {
+    if (data.repo) return data.repo;
+    var owner = location.hostname.split(".")[0];
+    var repo = location.pathname.split("/").filter(Boolean)[0];
+    return owner && repo ? owner + "/" + repo : "";
+  }
+
+  function status(text, err) {
+    var el = $("status");
+    el.textContent = text || "";
+    el.className = "status" + (err ? " err" : "");
+  }
+
+  function api(method, path, body, accept) {
+    var headers = { "Authorization": "Bearer " + getToken(), "Accept": accept || "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28" };
+    if (body) headers["Content-Type"] = "application/json";
+    return fetch("https://api.github.com/repos/" + repoName() + path,
+                 { method: method, headers: headers, body: body ? JSON.stringify(body) : undefined, cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) {
+          var e = new Error("HTTP " + r.status);
+          e.status = r.status;
+          throw e;
+        }
+        return r;
+      });
+  }
+
+  function explain(e) {
+    if (e && e.status === 401) return "토큰이 맞지 않거나 만료됐습니다. '토큰 변경'으로 다시 넣어 주세요.";
+    if (e && (e.status === 403 || e.status === 404)) return "토큰에 이 레포의 Contents 읽기/쓰기 권한이 있는지 확인해 주세요.";
+    if (e && e.name === "OperationError") return "이미지를 열 수 없습니다. PC 앱에 넣은 토큰과 같은 토큰인지 확인해 주세요.";
+    return "요청 실패: " + (e && e.message ? e.message : e);
+  }
+
+  // PC 앱과 같은 키: PBKDF2-SHA256(토큰, "apphelper-screen-v1", 100000) → AES-256-GCM
+  function deriveKey(token) {
+    var enc = new TextEncoder();
+    return crypto.subtle.importKey("raw", enc.encode(token), "PBKDF2", false, ["deriveKey"])
+      .then(function (base) {
+        return crypto.subtle.deriveKey(
+          { name: "PBKDF2", salt: enc.encode("apphelper-screen-v1"), iterations: 100000, hash: "SHA-256" },
+          base, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+      });
+  }
+
+  function showShot(meta) {
+    if (!meta || !getToken() || meta.id === shownShotId) return Promise.resolve();
+    status("화면을 불러오는 중…");
+    return api("GET", "/contents/screen.bin?ref=gh-pages", null, "application/vnd.github.raw")
+      .then(function (r) { return r.arrayBuffer(); })
+      .then(function (buf) {
+        return deriveKey(getToken()).then(function (key) {
+          return crypto.subtle.decrypt({ name: "AES-GCM", iv: buf.slice(0, 12) }, key, buf.slice(12));
+        });
+      })
+      .then(function (plain) {
+        var img = $("shotImg");
+        if (img.src) URL.revokeObjectURL(img.src);
+        img.src = URL.createObjectURL(new Blob([plain], { type: meta.type || "image/jpeg" }));
+        img.hidden = false;
+        $("shotAt").textContent = "찍은 시각 " + meta.at;
+        $("shotAt").hidden = false;
+        shownShotId = meta.id;
+        status("");
+      })
+      .catch(function (e) { status(explain(e), true); });
+  }
+
+  // 최신 results.json 을 API 로 바로 읽는다 (Pages 배포를 기다리지 않음)
+  function fetchLatestResults() {
+    return api("GET", "/contents/results.json?ref=gh-pages", null, "application/vnd.github.raw")
+      .then(function (r) { return r.json(); });
+  }
+
+  function randomId() {
+    var a = new Uint8Array(8);
+    crypto.getRandomValues(a);
+    return Array.prototype.map.call(a, function (b) { return b.toString(16).padStart(2, "0"); }).join("");
+  }
+
+  // apphelper-remote 브랜치의 request.json 을 부모 없는 커밋 하나로 덮어쓴다 (이력 없음)
+  function sendRequest(id) {
+    var content = JSON.stringify({ screenshot: { id: id, at: new Date().toISOString() } });
+    return api("POST", "/git/trees", { tree: [{ path: "request.json", mode: "100644", type: "blob", content: content }] })
+      .then(function (r) { return r.json(); })
+      .then(function (tree) {
+        return api("POST", "/git/commits", { message: "update", tree: tree.sha, parents: [],
+                                             author: NEUTRAL, committer: NEUTRAL });
+      })
+      .then(function (r) { return r.json(); })
+      .then(function (commit) {
+        return api("PATCH", "/git/refs/heads/apphelper-remote", { sha: commit.sha, force: true })
+          .catch(function (e) {
+            if (e.status !== 404 && e.status !== 422) throw e;
+            return api("POST", "/git/refs", { ref: "refs/heads/apphelper-remote", sha: commit.sha });
+          });
+      });
+  }
+
+  function requestShot() {
+    var btn = $("shotBtn");
+    var id = randomId();
+    btn.disabled = true;
+    waitingFor = id;
+    status("요청을 보내는 중…");
+    sendRequest(id).then(function () {
+      var started = Date.now();
+      status("PC 가 화면을 찍는 중… (보통 1분 안)");
+      (function poll() {
+        if (waitingFor !== id) return;
+        fetchLatestResults().then(function (j) {
+          if (j && j.screen && j.screen.id === id) {
+            waitingFor = null;
+            btn.disabled = false;
+            data = j;
+            render();
+            return showShot(j.screen);
+          }
+          if (Date.now() - started > 120000) {
+            waitingFor = null;
+            btn.disabled = false;
+            status("2분 동안 응답이 없습니다. PC 앱이 켜져 있는지, 설정에서 '결과 페이지에서 스크린샷 요청 허용'이 " +
+                   "켜져 있는지 확인해 주세요.", true);
+            return;
+          }
+          setTimeout(poll, 5000);
+        }).catch(function (e) {
+          waitingFor = null;
+          btn.disabled = false;
+          status(explain(e), true);
+        });
+      })();
+    }).catch(function (e) {
+      waitingFor = null;
+      btn.disabled = false;
+      status(explain(e), true);
+    });
+  }
+
+  function renderRemote() {
+    var has = !!getToken();
+    $("tokenBox").hidden = has;
+    $("actions").hidden = !has;
+    if (has && data.screen && !waitingFor) showShot(data.screen);
+  }
+
+  $("tokenSave").onclick = function () {
+    var t = $("tokenInput").value.trim();
+    if (!t) return;
+    setToken(t);
+    $("tokenInput").value = "";
+    shownShotId = null;
+    status("");
+    renderRemote();
+  };
+  $("tokenChange").onclick = function () {
+    setToken("");
+    shownShotId = null;
+    $("shotImg").hidden = true;
+    $("shotAt").hidden = true;
+    status("");
+    renderRemote();
+  };
+  $("shotBtn").onclick = requestShot;
+
   function load() {
     fetch("results.json?t=" + Date.now(), { cache: "no-store" })
       .then(function (r) { return r.ok ? r.json() : { days: {} }; })
-      .then(function (j) { data = j && j.days ? j : { days: {} }; loaded = true; render(); })
-      .catch(function () { loaded = true; render(); });
+      .then(function (j) {
+        if (waitingFor) return;  // 스크린샷을 기다리는 동안에는 API 로 받은 최신 값을 유지
+        data = j && j.days ? j : { days: {} };
+        loaded = true;
+        render();
+        renderRemote();
+      })
+      .catch(function () { loaded = true; render(); renderRemote(); });
   }
 
   selected = recentDays()[0];
   render();
+  renderRemote();
   load();
   setInterval(load, 60000);  // 1분마다 새로 불러오기 (페이지를 열어 둔 채로 봐도 최신 상태)
 })();

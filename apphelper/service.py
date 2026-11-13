@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -33,8 +33,15 @@ class Service:
         transport: Transport = urllib_transport,
         now: Callable[[], datetime] = datetime.now,
         shots_dir: Path | None = None,
+        capture_image: Callable[[], tuple[bytes, str]] | None = None,
     ):
         self.data = data.clone()
+        # 원격 스크린샷: capture_image() -> (이미지 바이트, MIME). 최신 1장을 메모리에만 들고 있다.
+        self.capture_image = capture_image
+        self._screen: tuple[str, bytes, dict] | None = None  # (만든 토큰, 암호문, 메타)
+        self._last_request_id: str | None = None
+        self._stop = threading.Event()
+        self._remote_thread: threading.Thread | None = None
         self.shots_dir = shots_dir  # None 이면 스크린샷을 남기지 않는다
         self._run_lock = threading.Lock()  # 예약 실행과 시범 작동이 동시에 클릭하지 않게
         self.backend = backend
@@ -51,10 +58,17 @@ class Service:
         self.scheduler = Scheduler(self.data, self._execute, on_hour=self._on_hour, now=now)
 
     # ------------------------------------------------------------ 수명
+    REMOTE_POLL_SECONDS = 30
+
     def start(self) -> None:
         self.scheduler.start()
+        if self.capture_image is not None and self._remote_thread is None:
+            self._remote_thread = threading.Thread(target=self._remote_loop, daemon=True,
+                                                   name="apphelper-remote")
+            self._remote_thread.start()
 
     def stop(self) -> None:
+        self._stop.set()
         self.scheduler.stop()
 
     @property
@@ -141,7 +155,50 @@ class Service:
             if not self._remote_loaded:
                 self.results.merge_remote(publisher.fetch_results())
                 self._remote_loaded = True
-            return publisher.publish(self.build_results())
+            results = self.build_results()
+            settings = settings or self.data.settings
+            results["repo"] = f"{settings.github_owner}/{settings.github_repo}"
+            binaries = {}
+            screen = self._screen
+            if screen is not None and screen[0] == settings.github_token:  # 토큰이 바뀌면 못 푸니 뺀다
+                from .core.remote import SCREEN_FILE
+                binaries[SCREEN_FILE] = screen[1]
+                results["screen"] = screen[2]
+            return publisher.publish(results, binaries)
+
+    # ------------------------------------------------------------ 원격 스크린샷
+    def _remote_loop(self) -> None:
+        while not self._stop.is_set():
+            settings = self.data.settings
+            if settings.remote_screenshot and settings.github_ready:
+                try:
+                    self.check_remote()
+                except Exception as e:  # noqa: BLE001 - 네트워크 오류로 멈추지 않게
+                    log.debug("원격 요청 확인 실패: %s", e)
+            self._stop.wait(self.REMOTE_POLL_SECONDS)
+
+    def check_remote(self, now_utc: datetime | None = None) -> bool:
+        """페이지의 스크린샷 요청을 확인하고, 새 요청이면 찍어서 올린다. 찍었으면 True."""
+        from .core.remote import derive_key, encrypt, parse_request
+        settings = self.data.settings
+        if not (settings.remote_screenshot and self.capture_image is not None):
+            return False
+        publisher = self._publisher()
+        if publisher is None:
+            return False
+        req = parse_request(publisher.fetch_remote_request())
+        if req is None or req.id == self._last_request_id:
+            return False
+        self._last_request_id = req.id
+        if not req.is_fresh(now_utc or datetime.now(timezone.utc)):
+            return False
+        data, mime = self.capture_image()
+        taken = self.now()
+        meta = {"id": req.id, "at": f"{taken:%Y-%m-%d %H:%M:%S}", "type": mime}
+        self._screen = (settings.github_token, encrypt(data, derive_key(settings.github_token)), meta)
+        log.debug("원격 스크린샷 %s (%d bytes)", req.id, len(data))
+        self.publish_now()
+        return True
 
     def request_publish(self) -> None:
         """비동기 갱신 요청. 여러 요청이 겹치면 한 번으로 합친다."""

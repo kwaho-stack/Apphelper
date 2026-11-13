@@ -67,18 +67,26 @@ def test_results_merge_remote_local_wins():
 
 
 class FakeGitHub:
-    def __init__(self, branch_exists=True, remote=None):
+    def __init__(self, branch_exists=True, remote=None, request=None, token="tok"):
         self.calls = []
         self.branch_exists = branch_exists
         self.remote = remote
+        self.request = request  # apphelper-remote 브랜치의 request.json
+        self.token = token
+        self.blobs = {}
 
     def __call__(self, method, url, token, body):
-        assert token == "tok"
+        assert token == self.token
         self.calls.append((method, url, body))
         if method == "GET":
-            if self.remote is None:
+            doc = self.request if "request.json" in url else self.remote
+            if doc is None:
                 raise HttpError(404, "Not Found")
-            return {"content": base64.b64encode(json.dumps(self.remote).encode()).decode()}
+            return {"content": base64.b64encode(json.dumps(doc).encode()).decode()}
+        if url.endswith("/git/blobs"):
+            sha = f"blob{len(self.blobs) + 1}"
+            self.blobs[sha] = base64.b64decode(body["content"])
+            return {"sha": sha}
         if url.endswith("/git/trees"):
             return {"sha": "tree1"}
         if url.endswith("/git/commits"):
@@ -131,7 +139,7 @@ def test_service_publish_merges_remote_and_minimizes():
     assert svc.publish_now() == "commit1"
     tree = {e["path"]: e["content"] for e in gh.calls[1][2]["tree"]}
     data = json.loads(tree["results.json"])
-    assert data == {"updated": "2026-10-11 09:05",
+    assert data == {"updated": "2026-10-11 09:05", "repo": "o/r",
                     "days": {"2026-10-10": {"3": {"r": "작동", "m": 1}},
                              "2026-10-11": {"14": {"r": "대기", "w": [10, 40]}}}}
     assert "tok" not in tree["results.json"] and "tok" not in tree["index.html"]

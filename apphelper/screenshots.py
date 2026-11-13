@@ -88,3 +88,23 @@ class ShotRecorder:
             self.saved.append(save_screenshot(self.backend, self._path(kind, name_note), (x, y), caption))
         except Exception as e:  # noqa: BLE001 - 스크린샷 실패가 실행을 막지 않게
             log.debug("스크린샷 실패: %s", e)
+
+
+def capture_image(backend: ScreenBackend, max_width: int = 1600, quality: int = 70) -> tuple[bytes, str]:
+    """원격 확인용 화면 이미지 (JPEG, 가로 max_width 이하로 줄임). (바이트, MIME) 를 돌려준다."""
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt
+
+    from .core.imagefind import grab_screen
+    from .ui.picker import rgb_to_qimage
+
+    img = rgb_to_qimage(grab_screen(backend))
+    if img.width() > max_width:
+        img = img.scaledToWidth(max_width, Qt.TransformationMode.SmoothTransformation)
+    for fmt, mime, q in (("JPG", "image/jpeg", quality), ("PNG", "image/png", -1)):
+        buf = QByteArray()
+        dev = QBuffer(buf)
+        dev.open(QIODevice.OpenModeFlag.WriteOnly)
+        if img.save(dev, fmt, q):
+            dev.close()
+            return bytes(buf.data()), mime
+    raise OSError("스크린샷 인코딩 실패")

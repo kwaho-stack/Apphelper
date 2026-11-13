@@ -156,6 +156,7 @@ class Settings:
     github_token: str = ""
     debug_log: bool = False
     running: bool = True
+    remote_screenshot: bool = False  # 결과 페이지에서 스크린샷 요청 허용 (기본 꺼짐)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -2,7 +2,7 @@ name: build
 
 on:
   push:
-    branches-ignore: [gh-pages]
+    branches-ignore: [gh-pages, apphelper-remote]
   workflow_dispatch:
 
 jobs:

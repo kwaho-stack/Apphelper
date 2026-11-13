@@ -471,6 +471,10 @@ class SettingsDialog(QDialog):
         self.token.setPlaceholderText("Contents: Read and write 권한의 fine-grained 토큰")
         self.debug = QCheckBox("디버그 로그 저장 (data/debug.log)")
         self.debug.setChecked(settings.debug_log)
+        self.remote = QCheckBox("결과 페이지에서 스크린샷 요청 허용")
+        self.remote.setChecked(settings.remote_screenshot)
+        self.remote.setToolTip("켜면 30초마다 요청을 확인합니다. 화면은 토큰으로 암호화해서 올리며,\n"
+                               "결과 페이지에 같은 토큰을 넣은 브라우저에서만 볼 수 있습니다.")
 
         form = QFormLayout()
         form.addRow("GitHub 소유자", self.owner)
@@ -478,6 +482,7 @@ class SettingsDialog(QDialog):
         form.addRow("토큰", self.token)
         form.addRow("", QLabel("토큰은 이 앱 폴더의 data/config.json 에만 저장됩니다."))
         form.addRow("", self.debug)
+        form.addRow("", self.remote)
 
         test = self.test_btn = QPushButton("결과 페이지 지금 갱신")
         test.clicked.connect(self._test)
@@ -515,6 +520,7 @@ class SettingsDialog(QDialog):
         s.github_repo = self.repo.text().strip()
         s.github_token = self.token.text().strip()
         s.debug_log = self.debug.isChecked()
+        s.remote_screenshot = self.remote.isChecked()
         return s
 
     def _test(self) -> None:
