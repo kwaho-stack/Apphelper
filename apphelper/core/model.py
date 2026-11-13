@@ -121,6 +121,12 @@ class Slot:
     blocks: list[BlockRef] = field(default_factory=list)
     debug: bool = False  # 상세 디버그: 이 시간대 실행 때 매 동작마다 스크린샷 저장
 
+    @property
+    def window(self) -> tuple[int, int]:
+        """실제로 쓰는 분 범위 (시작 > 끝이면 바꿔서 쓴다 — 스케줄러와 같은 규칙)."""
+        lo, hi = sorted((max(0, min(59, self.minute_start)), max(0, min(59, self.minute_end))))
+        return lo, hi
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "hour": self.hour,
@@ -202,6 +208,9 @@ class AppData:
 
     def enabled_hours(self) -> list[int]:
         return [s.hour for s in self.slots if s.enabled]
+
+    def enabled_windows(self) -> dict[int, tuple[int, int]]:
+        return {s.hour: s.window for s in self.slots if s.enabled}
 
     def clone(self) -> "AppData":
         return copy.deepcopy(self)

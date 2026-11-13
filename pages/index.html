@@ -22,7 +22,9 @@
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 15px/1.5 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
   main { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
-  h1 { font-size: 20px; margin: 0 0 16px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .updated { color: var(--muted); font-size: 13px; margin: 0 0 16px; font-variant-numeric: tabular-nums; }
+  .updated.stale { color: var(--fail); }
   .days { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 16px; }
   .days button { flex: none; border: 1px solid var(--line); background: var(--card); color: var(--text);
                  border-radius: 8px; padding: 6px 10px; cursor: pointer; font: inherit; font-size: 13px; }
@@ -33,7 +35,8 @@
   li { display: flex; align-items: center; justify-content: space-between; gap: 12px;
        padding: 10px 16px; border-top: 1px solid var(--line); }
   li:first-child { border-top: 0; }
-  .when { font-variant-numeric: tabular-nums; }
+  .when { font-variant-numeric: tabular-nums; display: flex; flex-direction: column; }
+  .range { color: var(--muted); font-size: 12px; }
   .tags { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
   .tag { border-radius: 999px; padding: 2px 10px; font-size: 13px; font-weight: 600; white-space: nowrap; }
   .ok { color: var(--ok); background: var(--ok-bg); }
@@ -45,6 +48,7 @@
 <body>
 <main>
   <h1>Apphelper 결과</h1>
+  <p class="updated" id="updated">불러오는 중…</p>
   <div class="days" id="days" role="group" aria-label="날짜 선택"></div>
   <p class="summary" id="summary"></p>
   <div class="card"><ul id="list"></ul></div>
@@ -90,7 +94,40 @@
     });
   }
 
+  // "YYYY-MM-DD HH:MM" (앱이 돌아가는 PC 의 현지 시각)
+  function parseLocal(text) {
+    var m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/.exec(text || "");
+    return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) : null;
+  }
+
+  function ago(minutes) {
+    if (minutes < 1) return "방금";
+    if (minutes < 60) return minutes + "분 전";
+    var h = Math.floor(minutes / 60);
+    if (h < 24) return h + "시간 " + (minutes % 60) + "분 전";
+    return Math.floor(h / 24) + "일 전";
+  }
+
+  function renderUpdated() {
+    var el = document.getElementById("updated");
+    var t = parseLocal(data.updated);
+    el.className = "updated";
+    if (!t) {
+      el.textContent = loaded ? "마지막 갱신 시각 정보 없음" : "불러오는 중…";
+      return;
+    }
+    var minutes = Math.max(0, Math.floor((Date.now() - t.getTime()) / 60000));
+    var text = "마지막 갱신 " + data.updated + " (" + ago(minutes) + ")";
+    // 앱은 매 시간 시작과 실행 직후 갱신하므로 70분 넘게 소식이 없으면 멈춘 것
+    if (minutes > 70) {
+      el.className = "updated stale";
+      text += " · 1시간 넘게 갱신이 없습니다. 앱이 꺼져 있거나 PC 가 절전 중일 수 있어요";
+    }
+    el.textContent = text;
+  }
+
   function render() {
+    renderUpdated();
     renderDays();
     var entries = data.days[selected] || {};
     var hours = Object.keys(entries).map(Number).sort(function (a, b) { return a - b; });
@@ -111,17 +148,25 @@
       var li = document.createElement("li");
       var when = document.createElement("span");
       when.className = "when";
+      var main = document.createElement("span");
+      when.appendChild(main);
+      if (e.w && e.w.length === 2) {
+        var range = document.createElement("span");
+        range.className = "range";
+        range.textContent = "설정 " + e.w[0] + "~" + e.w[1] + "분";
+        when.appendChild(range);
+      }
       var tags = document.createElement("span");
       tags.className = "tags";
       if (e.r === "작동") {
-        when.textContent = h + "시 — " + e.m + "분 작동";
+        main.textContent = h + "시 — " + e.m + "분 작동";
         (e.k || []).forEach(function (k) { tags.appendChild(tag(k, k === "변함!" ? "ok" : "fail")); });
         if (!(e.k || []).length) tags.appendChild(tag("작동", "ok"));
       } else if (e.r === "실패") {
-        when.textContent = typeof e.m === "number" ? h + "시 — " + e.m + "분" : h + "시";
+        main.textContent = typeof e.m === "number" ? h + "시 — " + e.m + "분" : h + "시";
         tags.appendChild(tag("실패", "fail"));
       } else {
-        when.textContent = h + "시";
+        main.textContent = h + "시";
         tags.appendChild(tag("대기", "wait"));
       }
       li.appendChild(when);
@@ -130,12 +175,19 @@
     });
   }
 
+  var loaded = false;
+
+  function load() {
+    fetch("results.json?t=" + Date.now(), { cache: "no-store" })
+      .then(function (r) { return r.ok ? r.json() : { days: {} }; })
+      .then(function (j) { data = j && j.days ? j : { days: {} }; loaded = true; render(); })
+      .catch(function () { loaded = true; render(); });
+  }
+
   selected = recentDays()[0];
   render();
-  fetch("results.json?t=" + Date.now(), { cache: "no-store" })
-    .then(function (r) { return r.ok ? r.json() : { days: {} }; })
-    .then(function (j) { data = j && j.days ? j : { days: {} }; render(); })
-    .catch(function () { render(); });
+  load();
+  setInterval(load, 60000);  // 1분마다 새로 불러오기 (페이지를 열어 둔 채로 봐도 최신 상태)
 })();
 </script>
 </body>

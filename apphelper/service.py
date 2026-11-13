@@ -87,7 +87,7 @@ class Service:
     def _execute(self, slot: Slot, data: AppData, when: datetime) -> None:
         log.debug("%d시 슬롯 실행 시작 (%d분)", slot.hour, when.minute)
         result, shots = self._run(data, slot)
-        self.results.record(when, result.ok, result.key_results)
+        self.results.record(when, result.ok, result.key_results, window=slot.window)
         if result.ok:
             detail = " · ".join(result.key_results) or "완료"
         else:
@@ -127,10 +127,10 @@ class Service:
 
     def build_results(self) -> dict:
         now = self.now()
-        self.results.mark_checked(now.date(), self.data.enabled_hours())
+        self.results.mark_checked(now.date(), self.data.enabled_windows())
         self.results.sweep_missed(now)
         self.results.prune(now.date())
-        return self.results.to_json()
+        return self.results.to_json(updated=now)
 
     def publish_now(self, settings: Settings | None = None) -> str | None:
         """동기 갱신. settings 를 주면 그 GitHub 설정으로 갱신한다(설정 화면의 테스트용). 설정이 없으면 None."""

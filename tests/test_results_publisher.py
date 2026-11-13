@@ -23,6 +23,27 @@ def test_results_flow():
     assert list(days) == ["9", "14", "15"]
 
 
+def test_results_windows():
+    r = Results()
+    r.mark_checked(date(2026, 10, 11), {9: (10, 40), 14: (0, 59)})
+    r.record(datetime(2026, 10, 11, 14, 23), True, ["변함!"], window=(0, 59))
+    r.mark_checked(date(2026, 10, 11), {9: (5, 15), 14: (30, 35)})  # 설정 변경
+    r.sweep_missed(datetime(2026, 10, 11, 20, 0))
+    days = r.to_json()["days"]["2026-10-11"]
+    assert days["9"] == {"r": "실패", "w": [5, 15]}               # 대기였던 건 새 범위, 실패 후에도 유지
+    assert days["14"] == {"r": "작동", "m": 23, "k": ["변함!"], "w": [0, 59]}  # 실행된 건 당시 범위
+    assert "updated" not in r.to_json()
+    assert r.to_json(updated=datetime(2026, 10, 11, 20, 1))["updated"] == "2026-10-11 20:01"
+
+
+def test_service_execute_records_window():
+    d = AppData()
+    d.slots[14].minute_start, d.slots[14].minute_end = 12, 34
+    svc = Service(d, FakeScreen(), "", now=lambda: datetime(2026, 10, 11, 14, 20))
+    svc._execute(d.slots[14], d, datetime(2026, 10, 11, 14, 20))
+    assert svc.results.get("2026-10-11", 14)["w"] == [12, 34]
+
+
 def test_results_uncheck_removes_waiting_only():
     r = Results()
     r.mark_checked(date(2026, 10, 11), [1, 2])
@@ -102,15 +123,17 @@ def test_publish_propagates_other_errors():
 def test_service_publish_merges_remote_and_minimizes():
     d = AppData()
     d.slots[14].enabled = True
+    d.slots[14].minute_start, d.slots[14].minute_end = 40, 10  # 거꾸로 넣어도 실제 쓰는 범위로
     d.settings.github_owner, d.settings.github_repo, d.settings.github_token = "o", "r", "tok"
     gh = FakeGitHub(remote={"days": {"2026-10-01": {"3": {"r": "작동", "m": 1}},
                                      "2026-10-10": {"3": {"r": "작동", "m": 1}}}})
-    svc = Service(d, FakeScreen(), "<html>", transport=gh, now=lambda: datetime(2026, 10, 11, 9, 0))
+    svc = Service(d, FakeScreen(), "<html>", transport=gh, now=lambda: datetime(2026, 10, 11, 9, 5))
     assert svc.publish_now() == "commit1"
     tree = {e["path"]: e["content"] for e in gh.calls[1][2]["tree"]}
     data = json.loads(tree["results.json"])
-    assert data == {"days": {"2026-10-10": {"3": {"r": "작동", "m": 1}},
-                             "2026-10-11": {"14": {"r": "대기"}}}}
+    assert data == {"updated": "2026-10-11 09:05",
+                    "days": {"2026-10-10": {"3": {"r": "작동", "m": 1}},
+                             "2026-10-11": {"14": {"r": "대기", "w": [10, 40]}}}}
     assert "tok" not in tree["results.json"] and "tok" not in tree["index.html"]
 
 
