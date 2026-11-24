@@ -89,100 +89,117 @@
   .shot { width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--line); display: block; }
   .shot-at { color: var(--muted); font-size: 13px; margin: 0; font-variant-numeric: tabular-nums; }
   hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; width: 100%; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 12px 0 4px; overflow-x: auto; }
+  .tabs button { flex: none; border: 1px solid transparent; border-bottom: 0; background: transparent; color: var(--muted);
+                 border-radius: 8px 8px 0 0; padding: 8px 12px; font: inherit; font-size: 14px; cursor: pointer;
+                 margin-bottom: -1px; }
+  .tabs button[aria-selected="true"] { background: var(--card); color: var(--text); font-weight: 600;
+                                       border-color: var(--line); border-bottom: 1px solid var(--card); }
+  .head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .head a { color: var(--muted); font-size: 13px; }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <main>
-  <h1>Apphelper</h1>
-  <p class="updated" id="updated">불러오는 중…</p>
+  <div class="head">
+    <h1>Apphelper</h1>
+    <a href="#" id="tokenChange" hidden>토큰 변경</a>
+  </div>
+  <p class="updated" id="updated" hidden></p>
 
-  <!-- 메신저 상태 (기존 mess) -->
-  <section id="msgSection" hidden>
-    <h2>메신저 상태</h2>
-    <div class="card pad">
-      <div class="big" id="msgCurrent"></div>
-      <div class="sub" id="msgSince"></div>
+  <!-- 토큰 없이는 아무것도 보이지 않는다 (모든 데이터가 토큰으로 암호화되어 있음) -->
+  <div class="card pad" id="tokenBox" hidden>
+    <p class="note">PC 의 Apphelper 설정에 넣은 것과 <b>같은 GitHub 토큰</b>을 넣어야 내용을 볼 수 있습니다.
+      모든 내용이 이 토큰으로 암호화되어 있고, 토큰은 이 브라우저에만 저장됩니다.</p>
+    <div class="row">
+      <input class="input" id="tokenInput" type="password" autocomplete="off" placeholder="github_pat_...">
+      <button class="btn primary" id="tokenSave" type="button">열기</button>
     </div>
-    <div class="card pad" id="othersCard" style="margin-top:10px" hidden>
-      <div style="font-weight:600">다른 사람 현황</div>
-      <div id="others"></div>
-    </div>
-    <div class="card" style="margin-top:10px">
-      <div style="font-weight:600;padding:10px 16px 6px">상태 변경 로그</div>
-      <div id="msgLog"></div>
-    </div>
-  </section>
+    <p class="status err" id="tokenMsg"></p>
+  </div>
 
-  <!-- 매크로 결과 -->
-  <section>
-    <h2>매크로 결과</h2>
-    <div class="days" id="days" role="group" aria-label="날짜 선택"></div>
-    <p class="summary" id="summary"></p>
-    <div class="card"><ul id="list"></ul></div>
-  </section>
-
-  <!-- 원격: 토큰 (전원·화면 공통) -->
-  <section>
-    <h2>원격 제어</h2>
-    <div class="card pad" id="tokenBox" hidden>
-      <p class="note">PC 의 Apphelper 설정에 넣은 것과 <b>같은 GitHub 토큰</b>을 넣으면 PC 전원 제어와 화면 보기를
-        쓸 수 있습니다. 토큰은 이 브라우저에만 저장됩니다.</p>
-      <div class="row">
-        <input class="input" id="tokenInput" type="password" autocomplete="off" placeholder="github_pat_...">
-        <button class="btn primary" id="tokenSave" type="button">저장</button>
-      </div>
+  <div id="app" hidden>
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" data-tab="messenger">메신저 상태</button>
+      <button type="button" role="tab" data-tab="macro">매크로</button>
+      <button type="button" role="tab" data-tab="power">PC 전원</button>
+      <button type="button" role="tab" data-tab="screen">PC 화면</button>
     </div>
-    <p class="note" id="tokenSet" hidden>토큰 저장됨 · <a href="#" id="tokenChange">토큰 변경</a></p>
-  </section>
 
-  <!-- PC 전원 (기존 closet) -->
-  <section id="powerSection" hidden>
-    <h2>PC 전원</h2>
-    <div class="card pad">
-      <div class="pc off" id="pcState"><span class="dot"></span><span>확인 중…</span></div>
-      <div class="sub" id="pcSeen"></div>
-      <hr>
-      <div class="sub" id="schedLabel">예약</div>
-      <div class="sched" id="sched">-</div>
-      <div class="sub" id="remain"></div>
-      <hr>
-      <div class="row" id="modeSeg">
-        <button class="btn sel" type="button" data-mode="shutdown">종료 예약</button>
-        <button class="btn" type="button" data-mode="restart">다시시작 예약</button>
+    <!-- 메신저 상태 (기존 mess) -->
+    <section data-panel="messenger">
+      <div class="card empty" id="msgOff" hidden>메신저 상태 감시가 꺼져 있습니다. PC 앱의 '메신저 상태' 탭에서 켜세요.</div>
+      <div id="msgOn" hidden>
+        <div class="card pad" style="margin-top:10px">
+          <div class="big" id="msgCurrent"></div>
+          <div class="sub" id="msgSince"></div>
+        </div>
+        <div class="card pad" id="othersCard" style="margin-top:10px" hidden>
+          <div style="font-weight:600">다른 사람 현황</div>
+          <div id="others"></div>
+        </div>
+        <div class="card" style="margin-top:10px">
+          <div style="font-weight:600;padding:10px 16px 6px">상태 변경 로그</div>
+          <div id="msgLog"></div>
+        </div>
       </div>
-      <div class="row">
-        <input class="input" type="time" id="time" style="flex:0 1 140px">
-        <button class="btn primary pw" type="button" id="schedBtn">예약</button>
-      </div>
-      <div class="row">
-        <button class="btn pw" type="button" data-min="30">+30분</button>
-        <button class="btn pw" type="button" data-min="60">+1시간</button>
-        <button class="btn pw" type="button" data-min="120">+2시간</button>
-        <button class="btn pw" type="button" data-min="180">+3시간</button>
-      </div>
-      <div class="row"><button class="btn pw grow" type="button" id="cancelBtn">예약 취소</button></div>
-      <div class="row">
-        <button class="btn pw grow" type="button" id="restartBtn">지금 다시시작</button>
-        <button class="btn danger pw grow" type="button" id="nowBtn">지금 종료</button>
-      </div>
-      <p class="status" id="powerMsg" role="status" aria-live="polite"></p>
-      <p class="note">PC 앱 설정에서 <b>결과 페이지에서 PC 종료/다시시작 허용</b>을 켜 두어야 합니다.
-        PC 가 10초마다 명령을 확인하고, 2분 넘게 지난 명령은 실행하지 않습니다.</p>
-    </div>
-  </section>
+    </section>
 
-  <!-- PC 화면 -->
-  <section id="shotSection" hidden>
-    <h2>PC 화면</h2>
-    <div class="card pad">
-      <div class="row"><button class="btn primary" id="shotBtn" type="button">지금 화면 보기</button></div>
-      <p class="status" id="status" role="status" aria-live="polite"></p>
-      <p class="shot-at" id="shotAt" hidden></p>
-      <img class="shot" id="shotImg" alt="PC 화면" hidden>
-      <p class="note">PC 앱 설정에서 <b>결과 페이지에서 스크린샷 요청 허용</b>을 켜 두어야 합니다. 보통 1분 안에 나타납니다.</p>
-    </div>
-  </section>
+    <!-- 매크로 결과 -->
+    <section data-panel="macro">
+      <div class="days" id="days" role="group" aria-label="날짜 선택" style="margin-top:10px"></div>
+      <p class="summary" id="summary"></p>
+      <div class="card"><ul id="list"></ul></div>
+    </section>
+
+    <!-- PC 전원 (기존 closet) -->
+    <section data-panel="power">
+      <div class="card pad" style="margin-top:10px">
+        <div class="pc off" id="pcState"><span class="dot"></span><span>확인 중…</span></div>
+        <div class="sub" id="pcSeen"></div>
+        <hr>
+        <div class="sub" id="schedLabel">예약</div>
+        <div class="sched" id="sched">-</div>
+        <div class="sub" id="remain"></div>
+        <hr>
+        <div class="row" id="modeSeg">
+          <button class="btn sel" type="button" data-mode="shutdown">종료 예약</button>
+          <button class="btn" type="button" data-mode="restart">다시시작 예약</button>
+        </div>
+        <div class="row">
+          <input class="input" type="time" id="time" style="flex:0 1 140px">
+          <button class="btn primary pw" type="button" id="schedBtn">예약</button>
+        </div>
+        <div class="row">
+          <button class="btn pw" type="button" data-min="30">+30분</button>
+          <button class="btn pw" type="button" data-min="60">+1시간</button>
+          <button class="btn pw" type="button" data-min="120">+2시간</button>
+          <button class="btn pw" type="button" data-min="180">+3시간</button>
+        </div>
+        <div class="row"><button class="btn pw grow" type="button" id="cancelBtn">예약 취소</button></div>
+        <div class="row">
+          <button class="btn pw grow" type="button" id="restartBtn">지금 다시시작</button>
+          <button class="btn danger pw grow" type="button" id="nowBtn">지금 종료</button>
+        </div>
+        <p class="status" id="powerMsg" role="status" aria-live="polite"></p>
+        <p class="note">PC 앱 설정에서 <b>결과 페이지에서 PC 종료/다시시작 허용</b>을 켜 두어야 합니다.
+          PC 가 10초마다 명령을 확인하고, 2분 넘게 지난 명령은 실행하지 않습니다.</p>
+      </div>
+    </section>
+
+    <!-- PC 화면 -->
+    <section data-panel="screen">
+      <div class="card pad" style="margin-top:10px">
+        <div class="row"><button class="btn primary" id="shotBtn" type="button">지금 화면 보기</button></div>
+        <p class="status" id="status" role="status" aria-live="polite"></p>
+        <p class="shot-at" id="shotAt" hidden></p>
+        <img class="shot" id="shotImg" alt="PC 화면" hidden>
+        <p class="note">PC 앱 설정에서 <b>결과 페이지에서 스크린샷 요청 허용</b>을 켜 두어야 합니다. 보통 1분 안에 나타납니다.
+          화면 가리기 중에도 가려진 검은 화면이 아니라 실제 화면이 찍힙니다.</p>
+      </div>
+    </section>
+  </div>
 </main>
 <script>
 (function () {
@@ -266,7 +283,8 @@
 
   function renderMessenger() {
     var m = data.messenger;
-    $("msgSection").hidden = !m;
+    $("msgOn").hidden = !m;
+    $("msgOff").hidden = !!m;
     if (!m) return;
     var cur = $("msgCurrent");
     cur.textContent = "";
@@ -392,8 +410,10 @@
   }
 
   // 결과를 올린 레포 (results.json 의 repo, 없으면 주소 owner.github.io/repo 에서)
+  var publicRepo = "";  // 공개 results.json 에서 읽은 레포 이름 (토큰을 바꿔도 유지)
   function repoName() {
     if (data.repo) return data.repo;
+    if (publicRepo) return publicRepo;
     var owner = location.hostname.split(".")[0];
     var repo = location.pathname.split("/").filter(Boolean)[0];
     return owner && repo ? owner + "/" + repo : "";
@@ -417,6 +437,49 @@
 
   function raw(path) { return api("GET", path, null, "application/vnd.github.raw"); }
 
+  // PC 앱과 같은 키: PBKDF2-SHA256(토큰, "apphelper-screen-v1", 100000) → AES-256-GCM
+  // 파일 형식: nonce(12바이트) + 암호문 + 태그
+  var keyCache = { token: null, key: null };
+  function deriveKey(token) {
+    if (keyCache.token === token) return keyCache.key;
+    var enc = new TextEncoder();
+    keyCache = { token: token, key: crypto.subtle.importKey("raw", enc.encode(token), "PBKDF2", false, ["deriveKey"])
+      .then(function (base) {
+        return crypto.subtle.deriveKey(
+          { name: "PBKDF2", salt: enc.encode("apphelper-screen-v1"), iterations: 100000, hash: "SHA-256" },
+          base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+      }) };
+    return keyCache.key;
+  }
+  function decryptBytes(buf) {
+    return deriveKey(getToken()).then(function (key) {
+      return crypto.subtle.decrypt({ name: "AES-GCM", iv: buf.slice(0, 12) }, key, buf.slice(12));
+    });
+  }
+  function decryptJson(buf) {
+    return decryptBytes(buf).then(function (plain) { return JSON.parse(new TextDecoder().decode(plain)); });
+  }
+  function encryptJson(obj) {
+    var iv = crypto.getRandomValues(new Uint8Array(12));
+    return deriveKey(getToken()).then(function (key) {
+      return crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, key, new TextEncoder().encode(JSON.stringify(obj)));
+    }).then(function (ct) {
+      var out = new Uint8Array(12 + ct.byteLength);
+      out.set(iv, 0);
+      out.set(new Uint8Array(ct), 12);
+      return out;
+    });
+  }
+  function toBase64(bytes) {
+    var s = "";
+    for (var i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
+  function readEncrypted(path) {  // 없으면 null
+    return raw(path).then(function (r) { return r.arrayBuffer(); }).then(decryptJson)
+      .catch(function (e) { if (e.status === 404) return null; throw e; });
+  }
+
   function explain(e) {
     if (e && e.status === 401) return "토큰이 맞지 않거나 만료됐습니다. '토큰 변경'으로 다시 넣어 주세요.";
     if (e && (e.status === 403 || e.status === 404)) return "토큰에 이 레포의 Contents 읽기/쓰기 권한이 있는지 확인해 주세요.";
@@ -424,12 +487,13 @@
     return "요청 실패: " + (e && e.message ? e.message : e);
   }
 
-  // branch 를 files 만 담은 부모 없는 커밋 하나로 덮어쓴다 (이력 없음)
-  function writeBranch(branch, files) {
-    var tree = Object.keys(files).map(function (p) {
-      return { path: p, mode: "100644", type: "blob", content: files[p] };
-    });
-    return api("POST", "/git/trees", { tree: tree })
+  // branch 를 파일 하나(바이트)만 담은 부모 없는 커밋으로 덮어쓴다 (이력 없음)
+  function writeBranch(branch, path, bytes) {
+    return api("POST", "/git/blobs", { content: toBase64(bytes), encoding: "base64" })
+      .then(function (r) { return r.json(); })
+      .then(function (blob) {
+        return api("POST", "/git/trees", { tree: [{ path: path, mode: "100644", type: "blob", sha: blob.sha }] });
+      })
       .then(function (r) { return r.json(); })
       .then(function (t) {
         return api("POST", "/git/commits", { message: "update", tree: t.sha, parents: [],
@@ -445,16 +509,16 @@
       });
   }
 
-  // request.json 의 한 항목(screenshot / power)만 바꾸고 나머지는 그대로 둔다
+  // 암호화된 request.bin 의 한 항목(screenshot / power)만 바꾸고 나머지는 그대로 둔다
   function sendRequest(key, value) {
-    return raw("/contents/request.json?ref=apphelper-remote")
-      .then(function (r) { return r.json(); })
-      .catch(function (e) { if (e.status === 404) return {}; throw e; })
+    return readEncrypted("/contents/request.bin?ref=apphelper-remote")
+      .catch(function () { return {}; })  // 풀 수 없으면(예전 토큰) 새로 쓴다
       .then(function (cur) {
         var next = cur && typeof cur === "object" ? cur : {};
         next[key] = value;
-        return writeBranch("apphelper-remote", { "request.json": JSON.stringify(next) });
-      });
+        return encryptJson(next);
+      })
+      .then(function (bytes) { return writeBranch("apphelper-remote", "request.bin", bytes); });
   }
 
   function randomId() {
@@ -517,9 +581,9 @@
   function pollPower() {
     clearTimeout(powerTimer);
     if (!getToken()) return;
-    raw("/contents/status.json?ref=apphelper-status")
-      .then(function (r) { return r.json(); })
+    readEncrypted("/contents/status.bin?ref=apphelper-status")
       .then(function (s) {
+        if (s === null) { var nf = new Error("not found"); nf.status = 404; throw nf; }
         pcStatus = s;
         pcStatusError = null;
         if (pendingPower && s.last_command_id === pendingPower.id) {
@@ -594,27 +658,13 @@
     $("status").className = "status" + (err ? " err" : "");
   }
 
-  // PC 앱과 같은 키: PBKDF2-SHA256(토큰, "apphelper-screen-v1", 100000) → AES-256-GCM
-  function deriveKey(token) {
-    var enc = new TextEncoder();
-    return crypto.subtle.importKey("raw", enc.encode(token), "PBKDF2", false, ["deriveKey"])
-      .then(function (base) {
-        return crypto.subtle.deriveKey(
-          { name: "PBKDF2", salt: enc.encode("apphelper-screen-v1"), iterations: 100000, hash: "SHA-256" },
-          base, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
-      });
-  }
 
   function showShot(meta) {
     if (!meta || !getToken() || meta.id === shownShotId) return Promise.resolve();
     status("화면을 불러오는 중…");
     return raw("/contents/screen.bin?ref=gh-pages")
       .then(function (r) { return r.arrayBuffer(); })
-      .then(function (buf) {
-        return deriveKey(getToken()).then(function (key) {
-          return crypto.subtle.decrypt({ name: "AES-GCM", iv: buf.slice(0, 12) }, key, buf.slice(12));
-        });
-      })
+      .then(decryptBytes)
       .then(function (plain) {
         var img = $("shotImg");
         if (img.src) URL.revokeObjectURL(img.src);
@@ -628,8 +678,9 @@
       .catch(function (e) { status(explain(e), true); });
   }
 
+  // 결과 전체는 data.bin 에 토큰으로 암호화되어 있다 (API 로 바로 읽어 Pages 배포를 기다리지 않음)
   function fetchLatestResults() {
-    return raw("/contents/results.json?ref=gh-pages").then(function (r) { return r.json(); });
+    return raw("/contents/data.bin?ref=gh-pages").then(function (r) { return r.arrayBuffer(); }).then(decryptJson);
   }
 
   function requestShot() {
@@ -673,14 +724,33 @@
   }
   $("shotBtn").onclick = requestShot;
 
+  // ------------------------------------------------------------------ 탭
+  var TAB_KEY = "apphelper.tab";
+  function showTab(name) {
+    Array.prototype.forEach.call(document.querySelectorAll("[data-tab]"), function (b) {
+      b.setAttribute("aria-selected", String(b.getAttribute("data-tab") === name));
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-panel]"), function (p) {
+      p.hidden = p.getAttribute("data-panel") !== name;
+    });
+    try { localStorage.setItem(TAB_KEY, name); } catch (e) {}
+    if (name === "screen" && data.screen && !waitingFor) showShot(data.screen);
+  }
+  Array.prototype.forEach.call(document.querySelectorAll("[data-tab]"), function (b) {
+    b.onclick = function () { showTab(b.getAttribute("data-tab")); };
+  });
+  var firstTab = "messenger";
+  try { firstTab = localStorage.getItem(TAB_KEY) || firstTab; } catch (e) {}
+  if (!document.querySelector('[data-tab="' + firstTab + '"]')) firstTab = "messenger";
+  showTab(firstTab);
+
   // ------------------------------------------------------------------ 토큰 화면
-  function renderRemote() {
+  function renderGate(unlocked) {
     var has = !!getToken();
-    $("tokenBox").hidden = has;
-    $("tokenSet").hidden = !has;
-    $("powerSection").hidden = !has;
-    $("shotSection").hidden = !has;
-    if (has && data.screen && !waitingFor) showShot(data.screen);
+    $("tokenBox").hidden = unlocked;
+    $("app").hidden = !unlocked;
+    $("updated").hidden = !unlocked;
+    $("tokenChange").hidden = !has;
   }
 
   $("tokenSave").onclick = function () {
@@ -688,52 +758,62 @@
     if (!t) return;
     setToken(t);
     $("tokenInput").value = "";
+    $("tokenMsg").textContent = "확인 중…";
     shownShotId = null;
     pcStatus = null;
-    renderRemote();
-    pollPower();
     load();
+    pollPower();
   };
   $("tokenChange").onclick = function (e) {
     e.preventDefault();
     setToken("");
+    data = { days: {} };
     shownShotId = null;
     pcStatus = null;
     clearTimeout(powerTimer);
+    clearTimeout(loadTimer);
     $("shotImg").hidden = true;
     $("shotAt").hidden = true;
+    $("tokenMsg").textContent = "";
     status("");
     powerMsg("");
-    renderRemote();
+    renderGate(false);
   };
 
   // ------------------------------------------------------------------ 불러오기
-  // 토큰이 있으면 API 로 최신 결과를 바로 읽고(20초마다), 없으면 페이지의 results.json (1분마다)
+  // 공개된 results.json 에는 '암호화됨' 표시와 레포 이름만 있다. 내용은 토큰이 있어야 data.bin 을 풀어 볼 수 있다.
   var loadTimer = null;
   function load() {
     clearTimeout(loadTimer);
-    var fromApi = !!getToken() && !!repoName();
-    var p = fromApi
-      ? fetchLatestResults().catch(function () { return fetch("results.json?t=" + Date.now(), { cache: "no-store" })
-          .then(function (r) { return r.ok ? r.json() : { days: {} }; }); })
-      : fetch("results.json?t=" + Date.now(), { cache: "no-store" })
-          .then(function (r) { return r.ok ? r.json() : { days: {} }; });
-    p.then(function (j) {
+    if (!getToken()) { renderGate(false); return; }
+    fetchLatestResults().then(function (j) {
       if (!waitingFor) data = j && j.days ? j : { days: {} };
       loaded = true;
+      $("tokenMsg").textContent = "";
+      renderGate(true);
       render();
-      renderRemote();
-    }).catch(function () { loaded = true; render(); renderRemote(); })
-      .then(function () { loadTimer = setTimeout(load, fromApi ? 20000 : 60000); });
+      if (data.screen && !waitingFor && !document.querySelector('[data-panel="screen"]').hidden) showShot(data.screen);
+      loadTimer = setTimeout(load, 20000);
+    }).catch(function (e) {
+      renderGate(false);
+      $("tokenMsg").textContent = e && e.name === "OperationError"
+        ? "토큰이 PC 앱에 넣은 것과 다릅니다." : e && e.status === 404
+        ? "아직 결과가 없습니다. PC 앱 설정에서 '결과 페이지 지금 갱신'을 눌러 주세요." : explain(e);
+      if (e && (e.status === 404 || !e.status)) loadTimer = setTimeout(load, 20000);
+    });
   }
+
+  // 공개 표시(results.json)에서 레포 이름만 미리 읽어 둔다
+  fetch("results.json?t=" + Date.now(), { cache: "no-store" })
+    .then(function (r) { return r.ok ? r.json() : {}; })
+    .then(function (j) { if (j && j.repo) publicRepo = j.repo; })
+    .catch(function () {})
+    .then(function () { load(); pollPower(); });
 
   var t = new Date(Date.now() + 3600000);
   $("time").value = String(t.getHours()).padStart(2, "0") + ":" + String(t.getMinutes()).padStart(2, "0");
   selected = recentDays()[0];
   render();
-  renderRemote();
-  load();
-  pollPower();
 })();
 </script>
 </body>

@@ -74,6 +74,11 @@ class TrayApp:
                                remote_state_path=self.store.data_dir / "remote_state.json")
         self.editor: EditorWindow | None = None
         self.warning = None
+        # 화면 가리기: 비밀번호 확인용 세션 검증값(메모리에만), 가리기 프로세스 제어
+        from .cover import CoverController
+        self.cover = CoverController()
+        self.verifier: dict | None = None
+        self._skip_lock_once = False
 
         self.tray = QSystemTrayIcon(make_icon(self.service.paused))
         self.tray.setToolTip("Apphelper")
@@ -140,6 +145,7 @@ class TrayApp:
         self._power_tick()
 
     def _power_tick(self) -> None:
+        self._cover_tick()
         action = self.service.power.tick()
         if action == "warn":
             from .ui.panels import PowerWarning
@@ -219,11 +225,13 @@ class TrayApp:
     # ------------------------------------------------------------ 편집 화면
     def _unlock(self) -> bool:
         """편집 화면을 열기 전 비밀번호 확인. 처음이면 비밀번호를 정하게 한다."""
+        from .cover.keys import make_verifier
         if not self.lock.is_set():
             pw = ask_new_password(first=True)
             if pw is None:
                 return False
             self.lock.set(pw)
+            self.verifier = make_verifier(pw)
             return True
         retry = False
         for _ in range(3):
@@ -231,20 +239,66 @@ class TrayApp:
             if pw is None:
                 return False
             if self.lock.verify(pw):
+                self.verifier = make_verifier(pw)  # 화면 가리기 해제용 (파일에 남기지 않음)
                 return True
             retry = True
         return False
 
     def change_password(self, parent=None) -> bool:
+        from .cover.keys import make_verifier
         pw = ask_new_password(parent, first=False)
         if pw is None:
             return False
         self.lock.set(pw)
+        self.verifier = make_verifier(pw)
         return True
+
+    # ------------------------------------------------------------ 화면 가리기
+    def start_cover(self) -> None:
+        """편집 창을 트레이로 숨기고 화면을 검게 가린다. 비밀번호를 치면 풀린다."""
+        if self.cover.active:
+            return
+        if self.verifier is None and not self._unlock():  # 보통은 편집 화면을 열 때 이미 만들어져 있다
+            return
+        if not self.verifier.get("typable", True):
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self.editor, "화면 가리기",
+                                "비밀번호에 한글 등 영문 자판으로 칠 수 없는 글자가 있어 화면 가리기를 풀 수 없습니다.\n"
+                                "설정 → 비밀번호 변경에서 영문·숫자·기호로 바꾼 뒤 다시 시도해 주세요.")
+            return
+        if self.editor:
+            self.editor.flush()
+            self.editor.close()
+        try:
+            self.cover.start(self.verifier)
+        except OSError as e:
+            self._cover_failed(f"화면 가리기를 시작하지 못했습니다: {e}")
+
+    def _cover_tick(self) -> None:
+        from .cover import EXIT_STOPPED, EXIT_UNLOCKED, EXIT_UNSUPPORTED
+        code = self.cover.poll()
+        if code is None or code == EXIT_STOPPED:
+            return
+        if code == EXIT_UNLOCKED:
+            self._skip_lock_once = True  # 방금 비밀번호를 쳤으니 편집 화면은 바로 연다
+            self.open_editor()
+        elif code == EXIT_UNSUPPORTED:
+            self._cover_failed("이 Windows 버전에서는 화면 가리기를 쓸 수 없습니다 (Windows 10 2004 이상 필요).")
+        else:
+            self._cover_failed(f"화면 가리기가 예상치 않게 끝났습니다 (코드 {code}).")
+
+    def _cover_failed(self, msg: str) -> None:
+        from PySide6.QtWidgets import QMessageBox
+        self._skip_lock_once = True  # 가려지지 않았으니 방금 숨긴 편집 화면을 다시 보여 준다
+        self.open_editor()
+        QMessageBox.warning(self.editor, "화면 가리기", msg)
 
     def open_editor(self):
         # 이미 떠 있는 편집 화면을 앞으로 가져오는 것은 그대로, 닫혀 있던 화면을 열 때만 잠금 확인
-        if not (self.editor and self.editor.isVisible()) and not self._unlock():
+        if self.cover.active:
+            return  # 가린 동안에는 비밀번호로 풀어야 한다
+        skip, self._skip_lock_once = self._skip_lock_once, False
+        if not (self.editor and self.editor.isVisible()) and not skip and not self._unlock():
             return
         if self.editor is None:
             self.editor = EditorWindow(self.data, self.backend, self._on_editor_save,
@@ -252,7 +306,7 @@ class TrayApp:
                                        on_trial_run=self.service.trial_run, shots_dir=self.shots_dir,
                                        power=self.service.power, on_power_now=self.power_now,
                                        messenger_log_dir=self.messenger_log_dir,
-                                       autostart=self._autostart())
+                                       autostart=self._autostart(), on_cover=self.start_cover)
         self.editor.show()
         self.editor.setWindowState(self.editor.windowState() & ~Qt.WindowState.WindowMinimized)
         self.editor.raise_()

@@ -7,6 +7,7 @@ import pytest
 from apphelper.core.model import AppData
 from apphelper.core.publisher import HttpError, Publisher
 from apphelper.core.results import Results
+from apphelper.core.remote import decrypt_json, derive_key, encrypt_json
 from apphelper.service import Service
 from tests.fakes import FakeScreen
 
@@ -74,15 +75,20 @@ class FakeGitHub:
         self.request = request  # apphelper-remote 브랜치의 request.json
         self.token = token
         self.blobs = {}
+        self.files = {}  # 경로 → 바이트 (암호화 파일 등), 있으면 우선
 
     def __call__(self, method, url, token, body):
         assert token == self.token
         self.calls.append((method, url, body))
         if method == "GET":
-            doc = self.request if "request.json" in url else self.remote
-            if doc is None:
+            path = url.split("/contents/", 1)[1].split("?", 1)[0]
+            raw = self.files.get(path)
+            if raw is None:
+                doc = {"request.json": self.request, "results.json": self.remote}.get(path)
+                raw = json.dumps(doc).encode() if doc is not None else None
+            if raw is None:
                 raise HttpError(404, "Not Found")
-            return {"content": base64.b64encode(json.dumps(doc).encode()).decode()}
+            return {"content": base64.b64encode(raw).decode()}
         if url.endswith("/git/blobs"):
             sha = f"blob{len(self.blobs) + 1}"
             self.blobs[sha] = base64.b64decode(body["content"])
@@ -137,14 +143,33 @@ def test_service_publish_merges_remote_and_minimizes():
                                      "2026-10-10": {"3": {"r": "작동", "m": 1}}}})
     svc = Service(d, FakeScreen(), "<html>", transport=gh, now=lambda: datetime(2026, 10, 11, 9, 5))
     assert svc.publish_now() == "commit1"
-    tree = {e["path"]: e["content"] for e in gh.calls[1][2]["tree"]}
-    data = json.loads(tree["results.json"])
+    tree = {e["path"]: e for e in gh.calls[-3][2]["tree"]}
+    assert json.loads(tree["results.json"]["content"]) == {"enc": 1, "repo": "o/r"}  # 공개 파일엔 아무 내용 없음
+    data = decrypt_json(gh.blobs[tree["data.bin"]["sha"]], derive_key("tok"))
     assert data == {"updated": "2026-10-11 09:05", "repo": "o/r",
                     "days": {"2026-10-10": {"3": {"r": "작동", "m": 1}},
                              "2026-10-11": {"14": {"r": "대기", "w": [10, 40]}}}}
-    assert "tok" not in tree["results.json"] and "tok" not in tree["index.html"]
+    assert "tok" not in tree["results.json"]["content"] and "tok" not in tree["index.html"]["content"]
 
 
 def test_service_no_github_settings_noop():
     svc = Service(AppData(), FakeScreen(), "")
     assert svc.publish_now() is None
+
+
+def test_service_reads_back_encrypted_results_after_restart():
+    """앱을 다시 켜면 gh-pages 의 암호화된 결과를 풀어서 이어 쓴다 (토큰이 바뀌면 새로 시작)."""
+    d = AppData()
+    d.settings.github_owner, d.settings.github_repo, d.settings.github_token = "o", "r", "tok"
+    prev = {"days": {"2026-10-11": {"3": {"r": "작동", "m": 7}}}}
+    gh = FakeGitHub()
+    gh.files["results.json"] = json.dumps({"enc": 1, "repo": "o/r"}).encode()
+    gh.files["data.bin"] = encrypt_json(prev, derive_key("tok"))
+    svc = Service(d, FakeScreen(), "<html>", transport=gh, now=lambda: datetime(2026, 10, 11, 9, 5))
+    svc.publish_now()
+    assert svc.results.get("2026-10-11", 3) == {"r": "작동", "m": 7}
+
+    gh.files["data.bin"] = encrypt_json(prev, derive_key("other-token"))
+    svc2 = Service(d, FakeScreen(), "<html>", transport=gh, now=lambda: datetime(2026, 10, 11, 9, 5))
+    svc2.publish_now()
+    assert svc2.results.get("2026-10-11", 3) is None

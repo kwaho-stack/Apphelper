@@ -65,27 +65,54 @@ class Publisher:
     def _call(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
         return self._t(method, self._url(path), self._token, body)
 
-    def fetch_results(self) -> dict[str, Any] | None:
-        """gh-pages 의 현재 results.json 을 읽는다. 없으면 None."""
+    def _get_bytes(self, path: str, ref: str) -> bytes | None:
+        """레포 파일 내용 (contents API, base64). 없으면 None."""
         try:
-            info = self._call("GET", f"/contents/{RESULTS_FILE}?ref={BRANCH}")
+            info = self._call("GET", f"/contents/{path}?ref={ref}")
         except HttpError as e:
             if e.status == 404:
                 return None
             raise
-        content = base64.b64decode(info.get("content", "")).decode("utf-8")
-        return json.loads(content) if content else None
+        return base64.b64decode(info.get("content", "") or "")
+
+    @property
+    def key(self) -> bytes:
+        from .remote import derive_key
+        return derive_key(self._token)
+
+    def fetch_results(self) -> dict[str, Any] | None:
+        """gh-pages 의 현재 결과. 암호화된 data.bin 을 토큰으로 풀고, 예전 평문 results.json 도 읽는다.
+
+        없거나 풀 수 없으면(토큰이 바뀜) None.
+        """
+        from .remote import DATA_FILE, decrypt_json
+        raw = self._get_bytes(RESULTS_FILE, BRANCH)
+        if not raw:
+            return None
+        doc = json.loads(raw.decode("utf-8"))
+        if not doc.get("enc"):
+            return doc  # 예전 평문 형식
+        blob = self._get_bytes(DATA_FILE, BRANCH)
+        if not blob:
+            return None
+        try:
+            return decrypt_json(blob, self.key)
+        except ValueError:
+            log.debug("이전 결과를 풀 수 없음 (토큰이 바뀜) — 새로 시작")
+            return None
 
     def fetch_remote_request(self) -> dict[str, Any] | None:
-        """페이지가 apphelper-remote 브랜치에 남긴 요청(request.json). 없으면 None."""
-        from .remote import REMOTE_BRANCH, REQUEST_FILE, decode_contents
-        try:
-            info = self._call("GET", f"/contents/{REQUEST_FILE}?ref={REMOTE_BRANCH}")
-        except HttpError as e:
-            if e.status == 404:
+        """페이지가 apphelper-remote 브랜치에 남긴 요청 (암호화된 request.bin, 예전 평문 request.json)."""
+        from .remote import REMOTE_BRANCH, REQUEST_BIN, REQUEST_FILE, decrypt_json
+        blob = self._get_bytes(REQUEST_BIN, REMOTE_BRANCH)
+        if blob is not None:
+            try:
+                return decrypt_json(blob, self.key)
+            except ValueError:
+                log.debug("요청을 풀 수 없음 (토큰이 다름)")
                 return None
-            raise
-        return decode_contents(info)
+        raw = self._get_bytes(REQUEST_FILE, REMOTE_BRANCH)
+        return json.loads(raw.decode("utf-8")) if raw else None
 
     def publish(self, results: dict[str, Any], binaries: dict[str, bytes] | None = None) -> str:
         """페이지와 결과(그리고 binaries 의 파일들)를 부모 없는 커밋 1개로 만들어 gh-pages 를 덮어쓴다.

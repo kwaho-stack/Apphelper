@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from apphelper.core.model import AppData
 from apphelper.core.remote import (
-    SCREEN_FILE, decrypt, derive_key, encrypt, parse_request,
+    SCREEN_FILE, decrypt, decrypt_json, derive_key, encrypt, encrypt_json, parse_request,
 )
 from apphelper.service import Service
 from tests.fakes import FakeScreen
@@ -50,11 +50,11 @@ def make_service(gh, remote_on=True, image=(b"JPEGDATA", "image/jpeg")):
 
 
 def published(gh):
-    """마지막 갱신의 (results.json, {경로: 바이트})."""
+    """마지막 갱신의 (풀어 낸 결과, {경로: 바이트})."""
     tree = [c for c in gh.calls if c[1].endswith("/git/trees")][-1][2]["tree"]
-    results = json.loads(next(e["content"] for e in tree if e["path"] == "results.json"))
+    assert json.loads(next(e["content"] for e in tree if e["path"] == "results.json"))["enc"] == 1
     bins = {e["path"]: gh.blobs[e["sha"]] for e in tree if "sha" in e}
-    return results, bins
+    return decrypt_json(bins.pop("data.bin"), derive_key(gh.token)), bins
 
 
 def test_new_request_captures_encrypts_and_publishes():
@@ -98,3 +98,15 @@ def test_screenshot_dropped_after_token_change():
     svc.publish_now()
     results, bins = published(gh)
     assert "screen" not in results and bins == {}
+
+
+def test_encrypted_request_is_read_and_wrong_token_ignored():
+    gh = FakeGitHub()
+    gh.files["request.bin"] = encrypt_json(request("enc1"), derive_key("tok"))
+    svc, taken = make_service(gh)
+    assert svc.check_remote(NOW_UTC) is True and taken == [1]
+
+    gh = FakeGitHub(request=request("plain"))  # request.bin 이 있으면 예전 평문은 보지 않는다
+    gh.files["request.bin"] = encrypt_json(request("enc2"), derive_key("someone-else"))
+    svc, taken = make_service(gh)
+    assert svc.check_remote(NOW_UTC) is False and taken == []

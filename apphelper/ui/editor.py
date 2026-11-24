@@ -427,7 +427,8 @@ class EditorWindow(QMainWindow):
                  power=None,
                  on_power_now: Callable[[str], None] | None = None,
                  messenger_log_dir: Path | None = None,
-                 autostart=None):
+                 autostart=None,
+                 on_cover: Callable[[], None] | None = None):
         super().__init__()
         self._on_change_password = on_change_password
         self._on_trial_run = on_trial_run
@@ -476,6 +477,12 @@ class EditorWindow(QMainWindow):
         bottom = QHBoxLayout()
         bottom.addWidget(self.status, 1)
         bottom.addWidget(self.last_run)
+        if on_cover is not None:
+            cover_btn = QPushButton("화면 가리기")
+            cover_btn.setToolTip("편집 창을 트레이로 숨기고 화면을 검게 가립니다. 매크로·감시는 그대로 돌아갑니다.\n"
+                                 "검은 화면에서 비밀번호를 치면(Enter 없이) 풀립니다. 비밀번호는 영문·숫자·기호만.")
+            cover_btn.clicked.connect(on_cover)
+            bottom.addWidget(cover_btn)
         bottom.addWidget(settings_btn)
 
         self.profile_box = QComboBox()

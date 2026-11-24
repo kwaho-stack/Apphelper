@@ -218,13 +218,15 @@ class Service:
             messenger = self.messenger_web_data()
             if messenger is not None:
                 results["messenger"] = messenger
+            from .core.remote import DATA_FILE, SCREEN_FILE, encrypt_json, envelope
             binaries = {}
             screen = self._screen
             if screen is not None and screen[0] == settings.github_token:  # 토큰이 바뀌면 못 푸니 뺀다
-                from .core.remote import SCREEN_FILE
                 binaries[SCREEN_FILE] = screen[1]
                 results["screen"] = screen[2]
-            return publisher.publish(results, binaries)
+            # 공개 페이지에는 '암호화됨' 표시만, 결과 전체는 토큰으로 암호화해서 올린다
+            binaries[DATA_FILE] = encrypt_json(results, publisher.key)
+            return publisher.publish(envelope(results["repo"]), binaries)
 
     # ------------------------------------------------------------ 메신저 상태
     def _ensure_monitor(self) -> MessengerMonitor | None:
@@ -360,7 +362,7 @@ class Service:
 
     def send_status(self, force: bool = False, online: bool = True) -> bool:
         """PC 상태(켜짐·예약)를 apphelper-status 브랜치에 올린다. 바뀌었거나 60초가 지났을 때만."""
-        from .core.remote import STATUS_BRANCH, STATUS_FILE
+        from .core.remote import STATUS_BIN, STATUS_BRANCH, encrypt_json
         if not self.data.settings.remote_power:
             return False
         publisher = self._publisher()
@@ -370,7 +372,8 @@ class Service:
         version = self.power.version
         if not force and version == self._status_version and now - self._status_sent_at < self.HEARTBEAT_SECONDS:
             return False
-        publisher.write_branch(STATUS_BRANCH, {STATUS_FILE: json.dumps(self.status_dict(online))})
+        publisher.write_branch(STATUS_BRANCH, {},
+                               {STATUS_BIN: encrypt_json(self.status_dict(online), publisher.key)})
         self._status_version, self._status_sent_at = version, now
         return True
 

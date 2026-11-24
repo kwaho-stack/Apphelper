@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 
 from apphelper.core.messenger import Point
+from apphelper.core.remote import decrypt_json, derive_key
 from apphelper.core.model import AppData
 from apphelper.service import Service
 from tests.fakes import FakeScreen
@@ -24,14 +25,24 @@ def make(gh, tmp_path, remote_power=True, clock=None):
 
 
 def last_tree(gh, branch=None):
-    """마지막으로 올린 (브랜치, {경로: 내용})."""
+    """마지막으로 올린 (브랜치, {경로: 내용}). 암호화 파일(.bin)은 풀어서 JSON 문자열로 돌려준다."""
     refs = [c for c in gh.calls if c[0] in ("PATCH", "POST") and "/git/refs" in c[1]]
     trees = [c for c in gh.calls if c[1].endswith("/git/trees")]
     pairs = list(zip(trees, refs))
     if branch:
         pairs = [p for p in pairs if branch in p[1][1] or p[1][2].get("ref", "").endswith(branch)]
     tree, ref = pairs[-1]
-    return ref[1], {e["path"]: e.get("content") for e in tree[2]["tree"]}
+    files = {}
+    for e in tree[2]["tree"]:
+        if "sha" in e:
+            files[e["path"]] = json.dumps(decrypt_json(gh.blobs[e["sha"]], derive_key("tok")))
+        else:
+            files[e["path"]] = e.get("content")
+    if "data.bin" in files:
+        files["results.json"] = files["data.bin"]
+    if "status.bin" in files:
+        files["status.json"] = files["status.bin"]
+    return ref[1], files
 
 
 def power_cmd(cid="c1", action="schedule", at_offset=600, mode="restart", age=0):

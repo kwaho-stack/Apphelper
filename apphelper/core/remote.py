@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import json
 import os
@@ -17,15 +18,18 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 REMOTE_BRANCH = "apphelper-remote"   # 페이지 → PC (요청)
-REQUEST_FILE = "request.json"
+REQUEST_FILE = "request.json"        # (예전 형식, 평문) — 읽기만 지원
+REQUEST_BIN = "request.bin"          # 암호화된 요청
 STATUS_BRANCH = "apphelper-status"   # PC → 페이지 (켜짐·전원 예약 상태, 60초마다)
-STATUS_FILE = "status.json"
+STATUS_BIN = "status.bin"            # 암호화된 PC 상태
+DATA_FILE = "data.bin"               # 암호화된 결과 전체 (gh-pages). results.json 에는 '암호화됨' 표시만
 SCREEN_FILE = "screen.bin"
 KEY_SALT = b"apphelper-screen-v1"
 KEY_ITERATIONS = 100_000
 MAX_REQUEST_AGE = timedelta(minutes=10)  # 이보다 오래된 요청은 무시 (앱을 늦게 켰을 때 엉뚱하게 찍지 않게)
 
 
+@functools.lru_cache(maxsize=4)
 def derive_key(token: str) -> bytes:
     return hashlib.pbkdf2_hmac("sha256", token.encode("utf-8"), KEY_SALT, KEY_ITERATIONS, 32)
 
@@ -39,6 +43,24 @@ def encrypt(data: bytes, key: bytes) -> bytes:
 def decrypt(blob: bytes, key: bytes) -> bytes:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     return AESGCM(key).decrypt(blob[:12], blob[12:], None)
+
+
+def encrypt_json(obj: Any, key: bytes) -> bytes:
+    return encrypt(json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8"), key)
+
+
+def decrypt_json(blob: bytes, key: bytes) -> Any:
+    """풀 수 없거나(토큰이 다름) 형식이 이상하면 ValueError."""
+    from cryptography.exceptions import InvalidTag
+    try:
+        return json.loads(decrypt(blob, key).decode("utf-8"))
+    except (InvalidTag, UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise ValueError("복호화 실패 (토큰이 다를 수 있음)") from e
+
+
+# 공개 페이지의 results.json — 내용은 data.bin 에 암호화되어 있다는 표시만 담는다
+def envelope(repo: str) -> dict[str, Any]:
+    return {"enc": 1, "repo": repo}
 
 
 @dataclass(frozen=True)
