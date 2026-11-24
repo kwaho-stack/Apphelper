@@ -481,8 +481,13 @@ class SettingsDialog(QDialog):
         form.addRow("레포 이름", self.repo)
         form.addRow("토큰", self.token)
         form.addRow("", QLabel("토큰은 이 앱 폴더의 data/config.json 에만 저장됩니다."))
+        self.remote_power = QCheckBox("결과 페이지에서 PC 종료/다시시작 허용")
+        self.remote_power.setChecked(settings.remote_power)
+        self.remote_power.setToolTip("켜면 10초마다 페이지의 명령을 확인하고, 60초마다 PC 켜짐·예약 상태를 올립니다.\n"
+                                     "같은 토큰을 넣은 브라우저에서만 제어할 수 있습니다.")
         form.addRow("", self.debug)
         form.addRow("", self.remote)
+        form.addRow("", self.remote_power)
 
         test = self.test_btn = QPushButton("결과 페이지 지금 갱신")
         test.clicked.connect(self._test)
@@ -521,6 +526,7 @@ class SettingsDialog(QDialog):
         s.github_token = self.token.text().strip()
         s.debug_log = self.debug.isChecked()
         s.remote_screenshot = self.remote.isChecked()
+        s.remote_power = self.remote_power.isChecked()
         return s
 
     def _test(self) -> None:

@@ -4,18 +4,22 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>Apphelper 결과</title>
+<title>Apphelper</title>
 <style>
   :root {
     --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #6b7280; --line: #e5e7eb;
     --ok: #15803d; --ok-bg: #dcfce7; --fail: #b91c1c; --fail-bg: #fee2e2;
     --wait: #92400e; --wait-bg: #fef3c7; --accent: #2563eb;
+    --on: #dc2626; --on-bg: #fee2e2; --away: #2563eb; --away-bg: #dbeafe;
+    --off: #6b7280; --off-bg: #f3f4f6; --na: #a16207; --na-bg: #fef9c3;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #111318; --card: #1a1d24; --text: #e6e8ee; --muted: #9aa1ad; --line: #2a2f3a;
       --ok: #4ade80; --ok-bg: #14301f; --fail: #f87171; --fail-bg: #3a1717;
       --wait: #fbbf24; --wait-bg: #3a2e10; --accent: #60a5fa;
+      --on: #f87171; --on-bg: #3a1717; --away: #60a5fa; --away-bg: #172554;
+      --off: #9aa1ad; --off-bg: #23272f; --na: #facc15; --na-bg: #3a2e10;
     }
   }
   * { box-sizing: border-box; }
@@ -23,13 +27,15 @@
          font: 15px/1.5 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
   main { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
   h1 { font-size: 20px; margin: 0 0 4px; }
-  .updated { color: var(--muted); font-size: 13px; margin: 0 0 16px; font-variant-numeric: tabular-nums; }
+  h2 { font-size: 16px; margin: 28px 0 8px; }
+  .updated { color: var(--muted); font-size: 13px; margin: 0 0 8px; font-variant-numeric: tabular-nums; }
   .updated.stale { color: var(--fail); }
-  .days { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 16px; }
+  .days { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 12px; }
   .days button { flex: none; border: 1px solid var(--line); background: var(--card); color: var(--text);
                  border-radius: 8px; padding: 6px 10px; cursor: pointer; font: inherit; font-size: 13px; }
   .days button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 4px 0; }
+  .pad { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
   .summary { color: var(--muted); font-size: 13px; margin: 0 0 10px; }
   ul { list-style: none; margin: 0; padding: 0; }
   li { display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -43,57 +49,155 @@
   .fail { color: var(--fail); background: var(--fail-bg); }
   .wait { color: var(--wait); background: var(--wait-bg); }
   .empty { color: var(--muted); padding: 24px 16px; text-align: center; }
-  h2 { font-size: 16px; margin: 28px 0 8px; }
-  .remote { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+  /* 메신저 상태 */
+  .st-on { color: var(--on); background: var(--on-bg); }
+  .st-away { color: var(--away); background: var(--away-bg); }
+  .st-off { color: var(--off); background: var(--off-bg); }
+  .st-na { color: var(--na); background: var(--na-bg); }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: currentColor; flex: none; }
+  .big { display: flex; align-items: center; gap: 10px; font-size: 22px; font-weight: 700; }
+  .big .who { color: var(--muted); font-size: 15px; font-weight: 600; }
+  .sub { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  details.person { border-top: 1px solid var(--line); }
+  details.person:first-child { border-top: 0; }
+  details.person summary { display: flex; align-items: center; gap: 10px; padding: 10px 0; cursor: pointer; list-style: none; }
+  details.person summary::-webkit-details-marker { display: none; }
+  details.person .name { flex: 1; font-weight: 600; }
+  .sub-log { padding: 0 0 10px 20px; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .sub-log .t { color: var(--muted); margin-right: 8px; }
+  .log-day { color: var(--muted); font-size: 12px; font-weight: 600; padding: 10px 16px 4px; background: var(--bg); }
+  .log-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 16px;
+             border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  /* 원격 */
   .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   .btn { border: 1px solid var(--line); background: var(--card); color: var(--text); border-radius: 8px;
          padding: 8px 12px; font: inherit; font-size: 14px; cursor: pointer; }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .btn.danger { color: var(--fail); border-color: var(--fail); font-weight: 600; }
+  .btn.sel { border-color: var(--accent); color: var(--accent); font-weight: 600; }
   .btn:disabled { opacity: .55; cursor: default; }
+  .grow { flex: 1; }
   .input { flex: 1 1 180px; min-width: 0; border: 1px solid var(--line); background: var(--bg); color: var(--text);
            border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 14px; }
   .note { color: var(--muted); font-size: 13px; margin: 0; }
   .status { font-size: 13px; margin: 0; min-height: 1.2em; }
   .status.err { color: var(--fail); }
+  .pc { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .pc.on { color: var(--ok); }
+  .pc.off { color: var(--muted); }
+  .sched { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .shot { width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--line); display: block; }
   .shot-at { color: var(--muted); font-size: 13px; margin: 0; font-variant-numeric: tabular-nums; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; width: 100%; }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <main>
-  <h1>Apphelper 결과</h1>
+  <h1>Apphelper</h1>
   <p class="updated" id="updated">불러오는 중…</p>
-  <div class="days" id="days" role="group" aria-label="날짜 선택"></div>
-  <p class="summary" id="summary"></p>
-  <div class="card"><ul id="list"></ul></div>
 
-  <h2>PC 화면</h2>
-  <div class="card remote">
-    <div id="tokenBox" hidden>
-      <p class="note">PC 의 Apphelper 설정에 넣은 것과 <b>같은 GitHub 토큰</b>을 넣으세요.
-        이 브라우저에만 저장되며, 화면 이미지는 이 토큰으로만 열 수 있게 암호화되어 있습니다.</p>
-      <div class="row" style="margin-top:8px">
+  <!-- 메신저 상태 (기존 mess) -->
+  <section id="msgSection" hidden>
+    <h2>메신저 상태</h2>
+    <div class="card pad">
+      <div class="big" id="msgCurrent"></div>
+      <div class="sub" id="msgSince"></div>
+    </div>
+    <div class="card pad" id="othersCard" style="margin-top:10px" hidden>
+      <div style="font-weight:600">다른 사람 현황</div>
+      <div id="others"></div>
+    </div>
+    <div class="card" style="margin-top:10px">
+      <div style="font-weight:600;padding:10px 16px 6px">상태 변경 로그</div>
+      <div id="msgLog"></div>
+    </div>
+  </section>
+
+  <!-- 매크로 결과 -->
+  <section>
+    <h2>매크로 결과</h2>
+    <div class="days" id="days" role="group" aria-label="날짜 선택"></div>
+    <p class="summary" id="summary"></p>
+    <div class="card"><ul id="list"></ul></div>
+  </section>
+
+  <!-- 원격: 토큰 (전원·화면 공통) -->
+  <section>
+    <h2>원격 제어</h2>
+    <div class="card pad" id="tokenBox" hidden>
+      <p class="note">PC 의 Apphelper 설정에 넣은 것과 <b>같은 GitHub 토큰</b>을 넣으면 PC 전원 제어와 화면 보기를
+        쓸 수 있습니다. 토큰은 이 브라우저에만 저장됩니다.</p>
+      <div class="row">
         <input class="input" id="tokenInput" type="password" autocomplete="off" placeholder="github_pat_...">
         <button class="btn primary" id="tokenSave" type="button">저장</button>
       </div>
     </div>
-    <div class="row" id="actions" hidden>
-      <button class="btn primary" id="shotBtn" type="button">지금 화면 보기</button>
-      <button class="btn" id="tokenChange" type="button">토큰 변경</button>
+    <p class="note" id="tokenSet" hidden>토큰 저장됨 · <a href="#" id="tokenChange">토큰 변경</a></p>
+  </section>
+
+  <!-- PC 전원 (기존 closet) -->
+  <section id="powerSection" hidden>
+    <h2>PC 전원</h2>
+    <div class="card pad">
+      <div class="pc off" id="pcState"><span class="dot"></span><span>확인 중…</span></div>
+      <div class="sub" id="pcSeen"></div>
+      <hr>
+      <div class="sub" id="schedLabel">예약</div>
+      <div class="sched" id="sched">-</div>
+      <div class="sub" id="remain"></div>
+      <hr>
+      <div class="row" id="modeSeg">
+        <button class="btn sel" type="button" data-mode="shutdown">종료 예약</button>
+        <button class="btn" type="button" data-mode="restart">다시시작 예약</button>
+      </div>
+      <div class="row">
+        <input class="input" type="time" id="time" style="flex:0 1 140px">
+        <button class="btn primary pw" type="button" id="schedBtn">예약</button>
+      </div>
+      <div class="row">
+        <button class="btn pw" type="button" data-min="30">+30분</button>
+        <button class="btn pw" type="button" data-min="60">+1시간</button>
+        <button class="btn pw" type="button" data-min="120">+2시간</button>
+        <button class="btn pw" type="button" data-min="180">+3시간</button>
+      </div>
+      <div class="row"><button class="btn pw grow" type="button" id="cancelBtn">예약 취소</button></div>
+      <div class="row">
+        <button class="btn pw grow" type="button" id="restartBtn">지금 다시시작</button>
+        <button class="btn danger pw grow" type="button" id="nowBtn">지금 종료</button>
+      </div>
+      <p class="status" id="powerMsg" role="status" aria-live="polite"></p>
+      <p class="note">PC 앱 설정에서 <b>결과 페이지에서 PC 종료/다시시작 허용</b>을 켜 두어야 합니다.
+        PC 가 10초마다 명령을 확인하고, 2분 넘게 지난 명령은 실행하지 않습니다.</p>
     </div>
-    <p class="status" id="status" role="status" aria-live="polite"></p>
-    <p class="shot-at" id="shotAt" hidden></p>
-    <img class="shot" id="shotImg" alt="PC 화면" hidden>
-    <p class="note">PC 앱 설정에서 <b>결과 페이지에서 스크린샷 요청 허용</b>을 켜 두어야 합니다.
-      PC 가 30초마다 확인하므로 보통 1분 안에 나타납니다.</p>
-  </div>
+  </section>
+
+  <!-- PC 화면 -->
+  <section id="shotSection" hidden>
+    <h2>PC 화면</h2>
+    <div class="card pad">
+      <div class="row"><button class="btn primary" id="shotBtn" type="button">지금 화면 보기</button></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <p class="shot-at" id="shotAt" hidden></p>
+      <img class="shot" id="shotImg" alt="PC 화면" hidden>
+      <p class="note">PC 앱 설정에서 <b>결과 페이지에서 스크린샷 요청 허용</b>을 켜 두어야 합니다. 보통 1분 안에 나타납니다.</p>
+    </div>
+  </section>
 </main>
 <script>
 (function () {
   "use strict";
   var data = { days: {} };
   var selected = null;
+  var loaded = false;
+
+  function $(id) { return document.getElementById(id); }
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
 
   function iso(d) {
     var m = String(d.getMonth() + 1).padStart(2, "0");
@@ -110,30 +214,10 @@
     return out;
   }
 
-  function tag(text, cls) {
-    var s = document.createElement("span");
-    s.className = "tag " + cls;
-    s.textContent = text;
-    return s;
-  }
-
-  function renderDays() {
-    var box = document.getElementById("days");
-    box.textContent = "";
-    recentDays().forEach(function (day, i) {
-      var b = document.createElement("button");
-      b.type = "button";
-      b.textContent = i === 0 ? "오늘" : day.slice(5).replace("-", "/");
-      b.setAttribute("aria-pressed", String(day === selected));
-      b.onclick = function () { selected = day; render(); };
-      box.appendChild(b);
-    });
-  }
-
-  // "YYYY-MM-DD HH:MM" (앱이 돌아가는 PC 의 현지 시각)
+  // "YYYY-MM-DD HH:MM[:SS]" (앱이 돌아가는 PC 의 현지 시각)
   function parseLocal(text) {
-    var m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/.exec(text || "");
-    return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) : null;
+    var m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})(?::(\d{2}))?$/.exec(text || "");
+    return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)) : null;
   }
 
   function ago(minutes) {
@@ -145,55 +229,132 @@
   }
 
   function renderUpdated() {
-    var el = document.getElementById("updated");
+    var e = $("updated");
     var t = parseLocal(data.updated);
-    el.className = "updated";
+    e.className = "updated";
     if (!t) {
-      el.textContent = loaded ? "마지막 갱신 시각 정보 없음" : "불러오는 중…";
+      e.textContent = loaded ? "마지막 갱신 시각 정보 없음" : "불러오는 중…";
       return;
     }
     var minutes = Math.max(0, Math.floor((Date.now() - t.getTime()) / 60000));
     var text = "마지막 갱신 " + data.updated + " (" + ago(minutes) + ")";
     // 앱은 매 시간 시작과 실행 직후 갱신하므로 70분 넘게 소식이 없으면 멈춘 것
     if (minutes > 70) {
-      el.className = "updated stale";
+      e.className = "updated stale";
       text += " · 1시간 넘게 갱신이 없습니다. 앱이 꺼져 있거나 PC 가 절전 중일 수 있어요";
     }
-    el.textContent = text;
+    e.textContent = text;
   }
 
-  function render() {
-    renderUpdated();
+  // ------------------------------------------------------------------ 메신저 상태
+  var STATE_CLS = { "온라인": "st-on", "자리비움": "st-away", "오프라인": "st-off", "확인불가": "st-na" };
+
+  function elapsed(fromStr) {
+    var from = parseLocal(fromStr);
+    if (!from) return "";
+    var s = Math.max(0, Math.floor((Date.now() - from.getTime()) / 1000));
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    return (h ? h + "시간 " : "") + m + "분 경과";
+  }
+
+  function pill(state) {
+    var p = el("span", "tag " + (STATE_CLS[state] || "st-off"));
+    p.appendChild(el("span", "dot"));
+    p.appendChild(document.createTextNode(" " + state));
+    return p;
+  }
+
+  function renderMessenger() {
+    var m = data.messenger;
+    $("msgSection").hidden = !m;
+    if (!m) return;
+    var cur = $("msgCurrent");
+    cur.textContent = "";
+    cur.className = "big " + (STATE_CLS[m.current] || "st-off");
+    cur.style.background = "transparent";
+    cur.appendChild(el("span", "dot"));
+    cur.appendChild(el("span", "", m.current));
+    if (m.name) cur.appendChild(el("span", "who", m.name));
+    $("msgSince").textContent = m.since ? m.since + " 부터 · " + elapsed(m.since) : "";
+
+    var others = m.others || [];
+    $("othersCard").hidden = !others.length;
+    var box = $("others");
+    box.textContent = "";
+    others.forEach(function (p) {
+      var d = el("details", "person");
+      var s = el("summary");
+      s.appendChild(el("span", "dot " + (STATE_CLS[p.state] || "st-off")));
+      s.appendChild(el("span", "name", p.name));
+      s.appendChild(pill(p.state));
+      d.appendChild(s);
+      var sub = el("div", "sub-log");
+      if (p.since) sub.appendChild(el("div", "sub", p.since.slice(11, 16) + "부터 · " + elapsed(p.since)));
+      (p.events || []).forEach(function (e) {
+        var row = el("div");
+        row.appendChild(el("span", "t", (e.time || "").slice(11, 19)));
+        row.appendChild(document.createTextNode(e.state));
+        sub.appendChild(row);
+      });
+      if (!(p.events || []).length) sub.appendChild(el("div", "t", "오늘 변화 없음"));
+      d.appendChild(sub);
+      box.appendChild(d);
+    });
+
+    var log = $("msgLog");
+    log.textContent = "";
+    var curDay = null;
+    (m.events || []).forEach(function (e) {
+      var day = e.day || (e.time || "").slice(0, 10);
+      if (day !== curDay) {
+        curDay = day;
+        var label = day === m.today ? "오늘 (" + day + ")" : day === m.yesterday ? "어제 (" + day + ")" : day;
+        log.appendChild(el("div", "log-day", label));
+      }
+      var row = el("div", "log-row");
+      row.appendChild(el("span", "", (e.time || "").slice(11) || e.time));
+      row.appendChild(pill(e.state));
+      log.appendChild(row);
+    });
+    if (!(m.events || []).length) log.appendChild(el("div", "empty", "기록 없음"));
+  }
+
+  // ------------------------------------------------------------------ 매크로 결과
+  function tag(text, cls) { return el("span", "tag " + cls, text); }
+
+  function renderDays() {
+    var box = $("days");
+    box.textContent = "";
+    recentDays().forEach(function (day, i) {
+      var b = el("button", "", i === 0 ? "오늘" : day.slice(5).replace("-", "/"));
+      b.type = "button";
+      b.setAttribute("aria-pressed", String(day === selected));
+      b.onclick = function () { selected = day; render(); };
+      box.appendChild(b);
+    });
+  }
+
+  function renderMacro() {
     renderDays();
     var entries = data.days[selected] || {};
     var hours = Object.keys(entries).map(Number).sort(function (a, b) { return a - b; });
-    var list = document.getElementById("list");
+    var list = $("list");
     list.textContent = "";
-    document.getElementById("summary").textContent = hours.length
+    $("summary").textContent = hours.length
       ? "작동 체크한 시간대: " + hours.map(function (h) { return h + "시"; }).join(", ")
       : "";
     if (!hours.length) {
-      var li = document.createElement("li");
-      li.className = "empty";
-      li.textContent = "이 날짜의 기록이 없습니다";
-      list.appendChild(li);
+      list.appendChild(el("li", "empty", "이 날짜의 기록이 없습니다"));
       return;
     }
     hours.forEach(function (h) {
       var e = entries[String(h)];
-      var li = document.createElement("li");
-      var when = document.createElement("span");
-      when.className = "when";
-      var main = document.createElement("span");
+      var li = el("li");
+      var when = el("span", "when");
+      var main = el("span");
       when.appendChild(main);
-      if (e.w && e.w.length === 2) {
-        var range = document.createElement("span");
-        range.className = "range";
-        range.textContent = "설정 " + e.w[0] + "~" + e.w[1] + "분";
-        when.appendChild(range);
-      }
-      var tags = document.createElement("span");
-      tags.className = "tags";
+      if (e.w && e.w.length === 2) when.appendChild(el("span", "range", "설정 " + e.w[0] + "~" + e.w[1] + "분"));
+      var tags = el("span", "tags");
       if (e.r === "작동") {
         main.textContent = h + "시 — " + e.m + "분 작동";
         (e.k || []).forEach(function (k) { tags.appendChild(tag(k, k === "변함!" ? "ok" : "fail")); });
@@ -211,20 +372,20 @@
     });
   }
 
-  var loaded = false;
+  function render() {
+    renderUpdated();
+    renderMessenger();
+    renderMacro();
+  }
 
-  // ------------------------------------------------------------------ PC 화면 (원격 스크린샷)
+  // ------------------------------------------------------------------ 원격 공통 (토큰, GitHub API)
   var TOKEN_KEY = "apphelper.token";
   var NEUTRAL = { name: "update", email: "update@localhost", date: "2000-01-01T00:00:00Z" };
-  var shownShotId = null;
-  var waitingFor = null;
-
-  function $(id) { return document.getElementById(id); }
+  var memToken = "";
 
   function getToken() {
     try { return localStorage.getItem(TOKEN_KEY) || ""; } catch (e) { return memToken; }
   }
-  var memToken = "";
   function setToken(t) {
     memToken = t;
     try { if (t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY); } catch (e) {}
@@ -236,12 +397,6 @@
     var owner = location.hostname.split(".")[0];
     var repo = location.pathname.split("/").filter(Boolean)[0];
     return owner && repo ? owner + "/" + repo : "";
-  }
-
-  function status(text, err) {
-    var el = $("status");
-    el.textContent = text || "";
-    el.className = "status" + (err ? " err" : "");
   }
 
   function api(method, path, body, accept) {
@@ -260,11 +415,183 @@
       });
   }
 
+  function raw(path) { return api("GET", path, null, "application/vnd.github.raw"); }
+
   function explain(e) {
     if (e && e.status === 401) return "토큰이 맞지 않거나 만료됐습니다. '토큰 변경'으로 다시 넣어 주세요.";
     if (e && (e.status === 403 || e.status === 404)) return "토큰에 이 레포의 Contents 읽기/쓰기 권한이 있는지 확인해 주세요.";
     if (e && e.name === "OperationError") return "이미지를 열 수 없습니다. PC 앱에 넣은 토큰과 같은 토큰인지 확인해 주세요.";
     return "요청 실패: " + (e && e.message ? e.message : e);
+  }
+
+  // branch 를 files 만 담은 부모 없는 커밋 하나로 덮어쓴다 (이력 없음)
+  function writeBranch(branch, files) {
+    var tree = Object.keys(files).map(function (p) {
+      return { path: p, mode: "100644", type: "blob", content: files[p] };
+    });
+    return api("POST", "/git/trees", { tree: tree })
+      .then(function (r) { return r.json(); })
+      .then(function (t) {
+        return api("POST", "/git/commits", { message: "update", tree: t.sha, parents: [],
+                                             author: NEUTRAL, committer: NEUTRAL });
+      })
+      .then(function (r) { return r.json(); })
+      .then(function (c) {
+        return api("PATCH", "/git/refs/heads/" + branch, { sha: c.sha, force: true })
+          .catch(function (e) {
+            if (e.status !== 404 && e.status !== 422) throw e;
+            return api("POST", "/git/refs", { ref: "refs/heads/" + branch, sha: c.sha });
+          });
+      });
+  }
+
+  // request.json 의 한 항목(screenshot / power)만 바꾸고 나머지는 그대로 둔다
+  function sendRequest(key, value) {
+    return raw("/contents/request.json?ref=apphelper-remote")
+      .then(function (r) { return r.json(); })
+      .catch(function (e) { if (e.status === 404) return {}; throw e; })
+      .then(function (cur) {
+        var next = cur && typeof cur === "object" ? cur : {};
+        next[key] = value;
+        return writeBranch("apphelper-remote", { "request.json": JSON.stringify(next) });
+      });
+  }
+
+  function randomId() {
+    var a = new Uint8Array(8);
+    crypto.getRandomValues(a);
+    return Array.prototype.map.call(a, function (b) { return b.toString(16).padStart(2, "0"); }).join("");
+  }
+
+  // ------------------------------------------------------------------ PC 전원 (기존 closet)
+  var MODE_NAMES = { shutdown: "종료", restart: "다시시작" };
+  var ONLINE_WINDOW_MS = 150000;  // PC 는 60초마다 상태를 올린다
+  var pcStatus = null, pcStatusError = null, powerMode = "shutdown", pendingPower = null, powerTimer = null;
+
+  function powerMsg(text, err) {
+    $("powerMsg").textContent = text || "";
+    $("powerMsg").className = "status" + (err ? " err" : "");
+  }
+
+  function pcOnline() {
+    return pcStatus && pcStatus.online && pcStatus.remote_power !== false &&
+           Date.now() - (pcStatus.updated_at || 0) < ONLINE_WINDOW_MS;
+  }
+
+  function fmtTime(ms) {
+    var d = new Date(ms), today = new Date(), tomorrow = new Date();
+    tomorrow.setDate(today.getDate() + 1);
+    var hm = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+    if (d.toDateString() === today.toDateString()) return "오늘 " + hm;
+    if (d.toDateString() === tomorrow.toDateString()) return "내일 " + hm;
+    return (d.getMonth() + 1) + "/" + d.getDate() + " " + hm;
+  }
+
+  function fmtRemain(ms) {
+    var s = Math.max(0, Math.floor(ms / 1000));
+    return [Math.floor(s / 3600), Math.floor((s % 3600) / 60), s % 60]
+      .map(function (n) { return String(n).padStart(2, "0"); }).join(":");
+  }
+
+  function renderPower() {
+    var online = pcOnline();
+    var st = $("pcState");
+    st.className = "pc " + (online ? "on" : "off");
+    st.lastChild.textContent = pcStatus === null
+      ? (pcStatusError ? "확인 불가" : "확인 중…")
+      : online ? "켜져 있음" : "꺼져 있음 (응답 없음)";
+    $("pcSeen").textContent = pcStatus && pcStatus.updated_at
+      ? "마지막 응답 " + fmtTime(pcStatus.updated_at) : "";
+    var sched = online ? pcStatus.scheduled_at : null;
+    var mode = (pcStatus && pcStatus.scheduled_mode) || "shutdown";
+    $("schedLabel").textContent = sched ? MODE_NAMES[mode] + " 예약" : "예약";
+    $("sched").textContent = sched ? fmtTime(sched) : "예약 없음";
+    $("remain").textContent = sched ? "남은 시간 " + fmtRemain(sched - Date.now()) : "";
+    Array.prototype.forEach.call(document.querySelectorAll(".pw"), function (b) { b.disabled = !online; });
+    if (!online && !pendingPower && !$("powerMsg").textContent) {
+      powerMsg(pcStatusError || "PC 가 꺼져 있거나, Apphelper 가 실행 중이 아니거나, 설정에서 전원 제어 허용이 꺼져 있으면 " +
+               "제어할 수 없습니다.");
+    }
+  }
+
+  function pollPower() {
+    clearTimeout(powerTimer);
+    if (!getToken()) return;
+    raw("/contents/status.json?ref=apphelper-status")
+      .then(function (r) { return r.json(); })
+      .then(function (s) {
+        pcStatus = s;
+        pcStatusError = null;
+        if (pendingPower && s.last_command_id === pendingPower.id) {
+          powerMsg("PC 가 \"" + pendingPower.label + "\" 명령을 받았습니다.");
+          pendingPower = null;
+        } else if (!pendingPower && pcOnline()) {
+          powerMsg("");
+        }
+      })
+      .catch(function (e) {
+        pcStatus = null;
+        pcStatusError = e.status === 404 ? "아직 PC 상태가 없습니다. PC 앱 설정에서 '결과 페이지에서 PC 종료/다시시작 허용'을 " +
+          "켜 주세요." : explain(e);
+      })
+      .then(function () {
+        renderPower();
+        powerTimer = setTimeout(pollPower, 10000);
+      });
+  }
+
+  function sendPower(action, atMs, label) {
+    var cmd = { id: randomId(), action: action, at: atMs || null,
+                mode: action === "schedule" ? powerMode : null, issued_at: Date.now() };
+    powerMsg("전송 중…");
+    sendRequest("power", cmd)
+      .then(function () {
+        pendingPower = { id: cmd.id, label: label };
+        powerMsg("\"" + label + "\" 전송됨 — PC 응답 대기 중 (보통 10초 안)");
+        setTimeout(pollPower, 4000);
+      })
+      .catch(function (e) { powerMsg(explain(e), true); });
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll("#modeSeg button"), function (b) {
+    b.onclick = function () {
+      powerMode = b.getAttribute("data-mode");
+      Array.prototype.forEach.call(document.querySelectorAll("#modeSeg button"), function (x) {
+        x.className = "btn" + (x === b ? " sel" : "");
+      });
+    };
+  });
+  $("schedBtn").onclick = function () {
+    var v = $("time").value;
+    if (!v) { powerMsg("시각을 고르세요.", true); return; }
+    var p = v.split(":"), t = new Date();
+    t.setHours(+p[0], +p[1], 0, 0);
+    if (t.getTime() <= Date.now()) t.setDate(t.getDate() + 1);
+    sendPower("schedule", t.getTime(), fmtTime(t.getTime()) + " " + MODE_NAMES[powerMode] + " 예약");
+  };
+  Array.prototype.forEach.call(document.querySelectorAll("[data-min]"), function (b) {
+    b.onclick = function () {
+      var min = +b.getAttribute("data-min");
+      var at = Date.now() + min * 60000;
+      sendPower("schedule", at, b.textContent + " " + MODE_NAMES[powerMode] + " 예약");
+    };
+  });
+  $("cancelBtn").onclick = function () { sendPower("cancel", null, "예약 취소"); };
+  $("restartBtn").onclick = function () {
+    if (confirm("PC 를 지금 다시시작할까요?")) sendPower("restart_now", null, "지금 다시시작");
+  };
+  $("nowBtn").onclick = function () {
+    if (confirm("PC 를 지금 종료할까요?")) sendPower("shutdown_now", null, "지금 종료");
+  };
+  setInterval(function () { if (pcStatus) renderPower(); }, 1000);
+
+  // ------------------------------------------------------------------ PC 화면
+  var shownShotId = null;
+  var waitingFor = null;
+
+  function status(text, err) {
+    $("status").textContent = text || "";
+    $("status").className = "status" + (err ? " err" : "");
   }
 
   // PC 앱과 같은 키: PBKDF2-SHA256(토큰, "apphelper-screen-v1", 100000) → AES-256-GCM
@@ -281,7 +608,7 @@
   function showShot(meta) {
     if (!meta || !getToken() || meta.id === shownShotId) return Promise.resolve();
     status("화면을 불러오는 중…");
-    return api("GET", "/contents/screen.bin?ref=gh-pages", null, "application/vnd.github.raw")
+    return raw("/contents/screen.bin?ref=gh-pages")
       .then(function (r) { return r.arrayBuffer(); })
       .then(function (buf) {
         return deriveKey(getToken()).then(function (key) {
@@ -301,35 +628,8 @@
       .catch(function (e) { status(explain(e), true); });
   }
 
-  // 최신 results.json 을 API 로 바로 읽는다 (Pages 배포를 기다리지 않음)
   function fetchLatestResults() {
-    return api("GET", "/contents/results.json?ref=gh-pages", null, "application/vnd.github.raw")
-      .then(function (r) { return r.json(); });
-  }
-
-  function randomId() {
-    var a = new Uint8Array(8);
-    crypto.getRandomValues(a);
-    return Array.prototype.map.call(a, function (b) { return b.toString(16).padStart(2, "0"); }).join("");
-  }
-
-  // apphelper-remote 브랜치의 request.json 을 부모 없는 커밋 하나로 덮어쓴다 (이력 없음)
-  function sendRequest(id) {
-    var content = JSON.stringify({ screenshot: { id: id, at: new Date().toISOString() } });
-    return api("POST", "/git/trees", { tree: [{ path: "request.json", mode: "100644", type: "blob", content: content }] })
-      .then(function (r) { return r.json(); })
-      .then(function (tree) {
-        return api("POST", "/git/commits", { message: "update", tree: tree.sha, parents: [],
-                                             author: NEUTRAL, committer: NEUTRAL });
-      })
-      .then(function (r) { return r.json(); })
-      .then(function (commit) {
-        return api("PATCH", "/git/refs/heads/apphelper-remote", { sha: commit.sha, force: true })
-          .catch(function (e) {
-            if (e.status !== 404 && e.status !== 422) throw e;
-            return api("POST", "/git/refs", { ref: "refs/heads/apphelper-remote", sha: commit.sha });
-          });
-      });
+    return raw("/contents/results.json?ref=gh-pages").then(function (r) { return r.json(); });
   }
 
   function requestShot() {
@@ -338,7 +638,7 @@
     btn.disabled = true;
     waitingFor = id;
     status("요청을 보내는 중…");
-    sendRequest(id).then(function () {
+    sendRequest("screenshot", { id: id, at: new Date().toISOString() }).then(function () {
       var started = Date.now();
       status("PC 가 화면을 찍는 중… (보통 1분 안)");
       (function poll() {
@@ -371,11 +671,15 @@
       status(explain(e), true);
     });
   }
+  $("shotBtn").onclick = requestShot;
 
+  // ------------------------------------------------------------------ 토큰 화면
   function renderRemote() {
     var has = !!getToken();
     $("tokenBox").hidden = has;
-    $("actions").hidden = !has;
+    $("tokenSet").hidden = !has;
+    $("powerSection").hidden = !has;
+    $("shotSection").hidden = !has;
     if (has && data.screen && !waitingFor) showShot(data.screen);
   }
 
@@ -385,37 +689,51 @@
     setToken(t);
     $("tokenInput").value = "";
     shownShotId = null;
-    status("");
+    pcStatus = null;
     renderRemote();
+    pollPower();
+    load();
   };
-  $("tokenChange").onclick = function () {
+  $("tokenChange").onclick = function (e) {
+    e.preventDefault();
     setToken("");
     shownShotId = null;
+    pcStatus = null;
+    clearTimeout(powerTimer);
     $("shotImg").hidden = true;
     $("shotAt").hidden = true;
     status("");
+    powerMsg("");
     renderRemote();
   };
-  $("shotBtn").onclick = requestShot;
 
+  // ------------------------------------------------------------------ 불러오기
+  // 토큰이 있으면 API 로 최신 결과를 바로 읽고(20초마다), 없으면 페이지의 results.json (1분마다)
+  var loadTimer = null;
   function load() {
-    fetch("results.json?t=" + Date.now(), { cache: "no-store" })
-      .then(function (r) { return r.ok ? r.json() : { days: {} }; })
-      .then(function (j) {
-        if (waitingFor) return;  // 스크린샷을 기다리는 동안에는 API 로 받은 최신 값을 유지
-        data = j && j.days ? j : { days: {} };
-        loaded = true;
-        render();
-        renderRemote();
-      })
-      .catch(function () { loaded = true; render(); renderRemote(); });
+    clearTimeout(loadTimer);
+    var fromApi = !!getToken() && !!repoName();
+    var p = fromApi
+      ? fetchLatestResults().catch(function () { return fetch("results.json?t=" + Date.now(), { cache: "no-store" })
+          .then(function (r) { return r.ok ? r.json() : { days: {} }; }); })
+      : fetch("results.json?t=" + Date.now(), { cache: "no-store" })
+          .then(function (r) { return r.ok ? r.json() : { days: {} }; });
+    p.then(function (j) {
+      if (!waitingFor) data = j && j.days ? j : { days: {} };
+      loaded = true;
+      render();
+      renderRemote();
+    }).catch(function () { loaded = true; render(); renderRemote(); })
+      .then(function () { loadTimer = setTimeout(load, fromApi ? 20000 : 60000); });
   }
 
+  var t = new Date(Date.now() + 3600000);
+  $("time").value = String(t.getHours()).padStart(2, "0") + ":" + String(t.getMinutes()).padStart(2, "0");
   selected = recentDays()[0];
   render();
   renderRemote();
   load();
-  setInterval(load, 60000);  // 1분마다 새로 불러오기 (페이지를 열어 둔 채로 봐도 최신 상태)
+  pollPower();
 })();
 </script>
 </body>

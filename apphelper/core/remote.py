@@ -16,8 +16,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-REMOTE_BRANCH = "apphelper-remote"
+REMOTE_BRANCH = "apphelper-remote"   # 페이지 → PC (요청)
 REQUEST_FILE = "request.json"
+STATUS_BRANCH = "apphelper-status"   # PC → 페이지 (켜짐·전원 예약 상태, 60초마다)
+STATUS_FILE = "status.json"
 SCREEN_FILE = "screen.bin"
 KEY_SALT = b"apphelper-screen-v1"
 KEY_ITERATIONS = 100_000

@@ -1,14 +1,19 @@
-"""스케줄러, 슬롯 실행, 결과 기록, GitHub Pages 갱신을 묶는 서비스 계층 (UI 독립)."""
+"""스케줄러, 슬롯 실행, 결과 기록, GitHub Pages 갱신, 메신저 상태 감시, 원격 요청(스크린샷·전원)을
+묶는 서비스 계층 (UI 독립)."""
 from __future__ import annotations
 
+import json
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
 from .core.crash import ScreenBackend
+from .core.messenger import MessengerLog, MessengerMonitor
 from .core.model import AppData, Settings, Slot
+from .core.power import PowerScheduler, parse_command
 from .core.publisher import Publisher, Transport, make_publisher, urllib_transport
 from .core.results import Results
 from .core.runner import run_slot
@@ -34,8 +39,24 @@ class Service:
         now: Callable[[], datetime] = datetime.now,
         shots_dir: Path | None = None,
         capture_image: Callable[[], tuple[bytes, str]] | None = None,
+        messenger_log_dir: Path | None = None,
+        remote_state_path: Path | None = None,
+        clock: Callable[[], float] = time.time,
     ):
         self.data = data.clone()
+        self.clock = clock
+        # 메신저 상태 감시 (설정에서 켜고 좌표가 있을 때만 돈다)
+        self.messenger_log = MessengerLog(messenger_log_dir) if messenger_log_dir else None
+        self.monitor: MessengerMonitor | None = None
+        self._monitor_lock = threading.Lock()
+        self._messenger_thread: threading.Thread | None = None
+        # PC 종료/다시시작 예약 (GUI 와 원격이 함께 쓴다)
+        self.power = PowerScheduler(clock=clock)
+        self.remote_state_path = remote_state_path
+        self._last_power_id = self._load_remote_state().get("last_power_id")
+        self._status_version = -1
+        self._status_sent_at = 0.0
+        self._last_publish = -1e9
         # 원격 스크린샷: capture_image() -> (이미지 바이트, MIME). 최신 1장을 메모리에만 들고 있다.
         self.capture_image = capture_image
         self._screen: tuple[str, bytes, dict] | None = None  # (만든 토큰, 암호문, 메타)
@@ -58,14 +79,20 @@ class Service:
         self.scheduler = Scheduler(self.data, self._execute, on_hour=self._on_hour, now=now)
 
     # ------------------------------------------------------------ 수명
-    REMOTE_POLL_SECONDS = 30
+    REMOTE_POLL_SECONDS = 10      # 원격 요청 확인 주기 (closet 과 같음)
+    HEARTBEAT_SECONDS = 60        # PC 켜짐 상태 갱신 주기
+    MIN_PUBLISH_INTERVAL = 30     # 결과 페이지 갱신 최소 간격 (Pages 빌드가 너무 잦지 않게)
 
     def start(self) -> None:
         self.scheduler.start()
-        if self.capture_image is not None and self._remote_thread is None:
+        if self._remote_thread is None:
             self._remote_thread = threading.Thread(target=self._remote_loop, daemon=True,
                                                    name="apphelper-remote")
             self._remote_thread.start()
+        if self.messenger_log is not None and self._messenger_thread is None:
+            self._messenger_thread = threading.Thread(target=self._messenger_loop, daemon=True,
+                                                      name="apphelper-messenger")
+            self._messenger_thread.start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -158,6 +185,9 @@ class Service:
             results = self.build_results()
             settings = settings or self.data.settings
             results["repo"] = f"{settings.github_owner}/{settings.github_repo}"
+            messenger = self.messenger_web_data()
+            if messenger is not None:
+                results["messenger"] = messenger
             binaries = {}
             screen = self._screen
             if screen is not None and screen[0] == settings.github_token:  # 토큰이 바뀌면 못 푸니 뺀다
@@ -166,27 +196,113 @@ class Service:
                 results["screen"] = screen[2]
             return publisher.publish(results, binaries)
 
-    # ------------------------------------------------------------ 원격 스크린샷
+    # ------------------------------------------------------------ 메신저 상태
+    def _ensure_monitor(self) -> MessengerMonitor | None:
+        cfg = self.data.messenger
+        if self.messenger_log is None or not (cfg.enabled and cfg.ready):
+            self.monitor = None
+            return None
+        with self._monitor_lock:
+            if self.monitor is None or not self.monitor.same_layout(cfg):
+                self.monitor = MessengerMonitor(cfg, self.messenger_log, self.now())
+            else:
+                self.monitor.config = cfg  # 확인 주기·허용오차 같은 값은 그대로 반영
+            return self.monitor
+
+    def messenger_step(self) -> bool:
+        """메신저 상태를 한 번 확인한다. 바뀐 게 있으면 결과 페이지 갱신을 요청하고 True."""
+        monitor = self._ensure_monitor()
+        if monitor is None:
+            return False
+        with self._monitor_lock:
+            changed, _ = monitor.step(self.backend, self.now())
+        if changed:
+            self.request_publish()
+        return changed
+
+    def _messenger_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.messenger_step()
+            except Exception as e:  # noqa: BLE001 - 화면 읽기 실패로 멈추지 않게
+                log.debug("메신저 상태 확인 실패: %s", e)
+            self._stop.wait(max(1, self.data.messenger.poll_interval))
+
+    def messenger_snapshot(self) -> list[dict[str, str]]:
+        monitor = self.monitor
+        return monitor.snapshot() if monitor else []
+
+    def messenger_web_data(self) -> dict | None:
+        monitor = self._ensure_monitor()
+        if monitor is None:
+            return None
+        with self._monitor_lock:
+            return monitor.web_data(self.now())
+
+    # ------------------------------------------------------------ 원격 요청 (스크린샷·전원)
+    def _load_remote_state(self) -> dict:
+        try:
+            with open(self.remote_state_path, encoding="utf-8") as f:  # type: ignore[arg-type]
+                return json.load(f)
+        except (OSError, ValueError, TypeError):
+            return {}
+
+    def _save_remote_state(self) -> None:
+        if self.remote_state_path is None:
+            return
+        try:
+            self.remote_state_path.parent.mkdir(parents=True, exist_ok=True)
+            self.remote_state_path.write_text(json.dumps({"last_power_id": self._last_power_id}),
+                                              encoding="utf-8")
+        except OSError as e:
+            log.debug("원격 상태 저장 실패: %s", e)
+
+    def _remote_enabled(self) -> bool:
+        s = self.data.settings
+        return s.github_ready and (s.remote_power or (s.remote_screenshot and self.capture_image is not None))
+
     def _remote_loop(self) -> None:
         while not self._stop.is_set():
-            settings = self.data.settings
-            if settings.remote_screenshot and settings.github_ready:
+            if self._remote_enabled():
                 try:
                     self.check_remote()
                 except Exception as e:  # noqa: BLE001 - 네트워크 오류로 멈추지 않게
                     log.debug("원격 요청 확인 실패: %s", e)
+                try:
+                    self.send_status()
+                except Exception as e:  # noqa: BLE001
+                    log.debug("PC 상태 갱신 실패: %s", e)
             self._stop.wait(self.REMOTE_POLL_SECONDS)
 
     def check_remote(self, now_utc: datetime | None = None) -> bool:
-        """페이지의 스크린샷 요청을 확인하고, 새 요청이면 찍어서 올린다. 찍었으면 True."""
-        from .core.remote import derive_key, encrypt, parse_request
-        settings = self.data.settings
-        if not (settings.remote_screenshot and self.capture_image is not None):
+        """페이지가 보낸 요청(request.json)을 확인해 처리한다. 스크린샷을 찍었으면 True."""
+        if not self._remote_enabled():
             return False
         publisher = self._publisher()
         if publisher is None:
             return False
-        req = parse_request(publisher.fetch_remote_request())
+        raw = publisher.fetch_remote_request() or {}
+        self._handle_power(raw.get("power"))
+        return self._handle_screenshot(raw, now_utc)
+
+    def _handle_power(self, cmd) -> None:
+        if not isinstance(cmd, dict) or not cmd.get("id") or cmd["id"] == self._last_power_id:
+            return
+        # 다시시작 뒤 같은 명령을 또 실행하지 않도록, 실행 전에 처리한 id 를 파일로 남긴다
+        self._last_power_id = str(cmd["id"])
+        self._save_remote_state()
+        parsed = parse_command(cmd, self.clock())
+        if parsed and self.data.settings.remote_power:
+            log.debug("원격 전원 명령: %s", parsed)
+            self.power.apply_remote(parsed)
+        self._status_version = -1  # 받았다는 걸 바로 알린다
+
+    def _handle_screenshot(self, raw: dict, now_utc: datetime | None) -> bool:
+        from .core.remote import derive_key, encrypt, parse_request
+        settings = self.data.settings
+        if not (settings.remote_screenshot and self.capture_image is not None):
+            return False
+        req = parse_request(raw)
         if req is None or req.id == self._last_request_id:
             return False
         self._last_request_id = req.id
@@ -199,6 +315,50 @@ class Service:
         log.debug("원격 스크린샷 %s (%d bytes)", req.id, len(data))
         self.publish_now()
         return True
+
+    def status_dict(self, online: bool = True) -> dict:
+        st = self.power.state()
+        at = st["scheduled_at"]
+        return {
+            "online": online,
+            "updated_at": int(self.clock() * 1000),
+            "scheduled_at": int(at * 1000) if at else None,
+            "scheduled_mode": st["mode"] if at else None,
+            "last_command_id": self._last_power_id,
+            "remote_power": self.data.settings.remote_power,
+        }
+
+    def send_status(self, force: bool = False, online: bool = True) -> bool:
+        """PC 상태(켜짐·예약)를 apphelper-status 브랜치에 올린다. 바뀌었거나 60초가 지났을 때만."""
+        from .core.remote import STATUS_BRANCH, STATUS_FILE
+        if not self.data.settings.remote_power:
+            return False
+        publisher = self._publisher()
+        if publisher is None:
+            return False
+        now = self.clock()
+        version = self.power.version
+        if not force and version == self._status_version and now - self._status_sent_at < self.HEARTBEAT_SECONDS:
+            return False
+        publisher.write_branch(STATUS_BRANCH, {STATUS_FILE: json.dumps(self.status_dict(online))})
+        self._status_version, self._status_sent_at = version, now
+        return True
+
+    def go_offline(self, timeout: float = 6) -> None:
+        """앱 종료·PC 종료 직전에 '꺼짐'으로 알린다 (최선 노력, timeout 초 안에)."""
+        if not (self.data.settings.remote_power and self.data.settings.github_ready):
+            return
+        t = threading.Thread(target=lambda: self._try(lambda: self.send_status(force=True, online=False)),
+                             daemon=True)
+        t.start()
+        t.join(timeout)
+
+    @staticmethod
+    def _try(fn) -> None:
+        try:
+            fn()
+        except Exception as e:  # noqa: BLE001
+            log.debug("실패: %s", e)
 
     def request_publish(self) -> None:
         """비동기 갱신 요청. 여러 요청이 겹치면 한 번으로 합친다."""
@@ -218,6 +378,12 @@ class Service:
                     self._worker_running = False
                     return
                 self._publish_pending.clear()
+            wait = self._last_publish + self.MIN_PUBLISH_INTERVAL - time.monotonic()
+            if wait > 0 and self._stop.wait(wait):
+                with self._request_lock:
+                    self._worker_running = False
+                return
+            self._last_publish = time.monotonic()
             try:
                 self.publish_now()
             except Exception as e:  # noqa: BLE001 - 네트워크 오류로 앱이 멈추지 않게 한다

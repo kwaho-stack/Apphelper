@@ -11,8 +11,8 @@ from PySide6.QtCore import QMimeData, QPoint, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QDrag, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QHBoxLayout, QInputDialog, QLabel, QListView,
-    QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea, QSpinBox, QSplitter, QToolButton,
-    QVBoxLayout, QWidget,
+    QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea, QSpinBox,
+    QSplitter, QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 from ..core.crash import ScreenBackend, is_on_screen
@@ -423,7 +423,11 @@ class EditorWindow(QMainWindow):
                  on_wipe: Callable[[], AppData],
                  on_change_password: Callable[[QWidget], bool] | None = None,
                  on_trial_run: Callable[[AppData, int], str] | None = None,
-                 shots_dir: Path | None = None):
+                 shots_dir: Path | None = None,
+                 power=None,
+                 on_power_now: Callable[[str], None] | None = None,
+                 messenger_log_dir: Path | None = None,
+                 autostart=None):
         super().__init__()
         self._on_change_password = on_change_password
         self._on_trial_run = on_trial_run
@@ -492,10 +496,25 @@ class EditorWindow(QMainWindow):
         hint.setStyleSheet("color: gray;")
         top.addWidget(hint)
 
+        macro = QWidget()
+        ml = QVBoxLayout(macro)
+        ml.setContentsMargins(0, 0, 0, 0)
+        ml.addLayout(top)
+        ml.addWidget(splitter, 1)
+
+        from .panels import MessengerPanel, PowerPanel  # 순환 import 방지
+        self.tabs = QTabWidget()
+        self.tabs.addTab(macro, "매크로")
+        self.messenger_panel = MessengerPanel(self, messenger_log_dir)
+        self.tabs.addTab(self.messenger_panel, "메신저 상태")
+        self.power_panel = None
+        if power is not None and on_power_now is not None:
+            self.power_panel = PowerPanel(self, power, on_power_now, autostart)
+            self.tabs.addTab(self.power_panel, "PC 전원")
+
         central = QWidget()
         cl = QVBoxLayout(central)
-        cl.addLayout(top)
-        cl.addWidget(splitter, 1)
+        cl.addWidget(self.tabs, 1)
         cl.addLayout(bottom)
         self.setCentralWidget(central)
         self.refresh()
@@ -582,6 +601,11 @@ class EditorWindow(QMainWindow):
     def load(self, data: AppData):
         self.data = data.clone()
         self._rebind()
+        self.messenger_panel.load()
+
+    def set_live(self, messenger_snapshot: list[dict[str, str]]):
+        """트레이 앱이 2초마다 넘겨 주는 실시간 상태."""
+        self.messenger_panel.show_live(messenger_snapshot)
 
     def _rebind(self):
         self.clipboard = []  # 다른 프로필의 블록 id 는 의미가 없다

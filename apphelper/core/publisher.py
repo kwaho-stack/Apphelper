@@ -97,6 +97,11 @@ class Publisher:
             RESULTS_FILE: json.dumps(results, ensure_ascii=False, separators=(",", ":")),
             ".nojekyll": "",
         }
+        return self.write_branch(BRANCH, files, binaries)
+
+    def write_branch(self, branch: str, files: dict[str, str],
+                     binaries: dict[str, bytes] | None = None) -> str:
+        """branch 를 files(+binaries) 만 담은 부모 없는 커밋 1개로 덮어쓴다 (이력이 남지 않음)."""
         entries: list[dict[str, Any]] = [
             {"path": path, "mode": "100644", "type": "blob", "content": content}
             for path, content in files.items()
@@ -115,13 +120,13 @@ class Publisher:
         })
         sha = commit["sha"]
         try:
-            self._call("PATCH", f"/git/refs/heads/{BRANCH}", {"sha": sha, "force": True})
+            self._call("PATCH", f"/git/refs/heads/{branch}", {"sha": sha, "force": True})
         except HttpError as e:
             if e.status not in (404, 422):
                 raise
             # 브랜치가 아직 없으면 새로 만든다.
-            self._call("POST", "/git/refs", {"ref": f"refs/heads/{BRANCH}", "sha": sha})
-        log.debug("gh-pages 갱신: %s", sha)
+            self._call("POST", "/git/refs", {"ref": f"refs/heads/{branch}", "sha": sha})
+        log.debug("%s 갱신: %s", branch, sha)
         return sha
 
 

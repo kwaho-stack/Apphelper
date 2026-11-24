@@ -1,4 +1,4 @@
-"""Apphelper 진입점: 시스템 트레이 상주, 편집 화면, 스케줄러 서비스 연결."""
+"""Apphelper 진입점: 시스템 트레이 상주, 편집 화면(매크로·메신저 상태·PC 전원), 서비스 연결."""
 from __future__ import annotations
 
 import logging
@@ -66,10 +66,14 @@ class TrayApp:
         self.backend = get_backend()
         self.page_html = load_page_template()
         self.shots_dir = self.store.data_dir / "screenshots"
+        self.messenger_log_dir = self.store.data_dir / "messenger" / "logs"
         from .screenshots import capture_image
         self.service = Service(self.data, self.backend, self.page_html, shots_dir=self.shots_dir,
-                               capture_image=lambda: capture_image(self.backend))
+                               capture_image=lambda: capture_image(self.backend),
+                               messenger_log_dir=self.messenger_log_dir,
+                               remote_state_path=self.store.data_dir / "remote_state.json")
         self.editor: EditorWindow | None = None
+        self.warning = None
 
         self.tray = QSystemTrayIcon(make_icon(self.service.paused))
         self.tray.setToolTip("Apphelper")
@@ -80,6 +84,8 @@ class TrayApp:
         self.profile_menu = menu.addMenu("프로필")
         self.profile_menu.aboutToShow.connect(self._build_profile_menu)
         menu.addAction("편집 화면 열기", self.open_editor)
+        self.cancel_power_action = menu.addAction("종료/다시시작 예약 취소", self.service.power.cancel)
+        menu.aboutToShow.connect(self._update_menu)
         menu.addSeparator()
         menu.addAction("종료", self.quit)
         self.menu = menu
@@ -90,6 +96,9 @@ class TrayApp:
         self._status_timer = QTimer()
         self._status_timer.timeout.connect(self._refresh_status)
         self._status_timer.start(2000)
+        self._power_timer = QTimer()  # 종료/다시시작 예약 확인 (1초)
+        self._power_timer.timeout.connect(self._power_tick)
+        self._power_timer.start(1000)
 
         self.server = QLocalServer()
         QLocalServer.removeServer(INSTANCE_NAME)
@@ -105,11 +114,53 @@ class TrayApp:
             self.open_editor()
 
     def quit(self) -> None:
+        power = self.service.power
+        if power.state()["scheduled_at"] is not None:
+            from PySide6.QtWidgets import QMessageBox
+            from .core.power import MODE_NAMES
+            if QMessageBox.question(None, "Apphelper 종료",
+                                    f"{MODE_NAMES[power.state()['mode']]} 예약이 있습니다. "
+                                    "Apphelper 를 끝내면 예약이 취소됩니다. 계속할까요?") \
+                    != QMessageBox.StandardButton.Yes:
+                return
+            power.cancel()
         if self.editor:
             self.editor.flush()
+        self.service.go_offline()
         self.service.stop()
         self.tray.hide()
         self.app.quit()
+
+    # ------------------------------------------------------------ PC 전원
+    def _update_menu(self):
+        self.cancel_power_action.setVisible(self.service.power.state()["scheduled_at"] is not None)
+
+    def power_now(self, mode: str) -> None:
+        self.service.power.now_action(mode)
+        self._power_tick()
+
+    def _power_tick(self) -> None:
+        action = self.service.power.tick()
+        if action == "warn":
+            from .ui.panels import PowerWarning
+            self.warning = PowerWarning(self.service.power)
+            self.warning.show()
+            self.warning.raise_()
+            self.warning.activateWindow()
+        elif action == "fire":
+            mode = self.service.power.take()
+            if mode:
+                self._do_power(mode)
+
+    def _do_power(self, mode: str) -> None:
+        """실제 종료/다시시작. 페이지에 '꺼짐'을 먼저 알리고 Windows 명령을 실행한다."""
+        from .core.power import shutdown_now
+        if self.warning is not None:
+            self.warning.close()
+        if self.editor:
+            self.editor.flush()
+        self.service.go_offline()
+        shutdown_now(force=self.data.settings.power_force, restart=mode == "restart")
 
     # ------------------------------------------------------------ 트레이
     def _on_activated(self, reason):
@@ -153,6 +204,7 @@ class TrayApp:
         status = self.service.last_status
         if self.editor:
             self.editor.set_last_run(status)
+            self.editor.set_live(self.service.messenger_snapshot())
 
     def toggle_running(self):
         if self.editor:
@@ -197,7 +249,10 @@ class TrayApp:
         if self.editor is None:
             self.editor = EditorWindow(self.data, self.backend, self._on_editor_save,
                                        self._test_publish, self._wipe, self.change_password,
-                                       on_trial_run=self.service.trial_run, shots_dir=self.shots_dir)
+                                       on_trial_run=self.service.trial_run, shots_dir=self.shots_dir,
+                                       power=self.service.power, on_power_now=self.power_now,
+                                       messenger_log_dir=self.messenger_log_dir,
+                                       autostart=self._autostart())
         self.editor.show()
         self.editor.setWindowState(self.editor.windowState() & ~Qt.WindowState.WindowMinimized)
         self.editor.raise_()
@@ -226,9 +281,21 @@ class TrayApp:
         sha = self.service.publish_now(settings)
         return f"갱신 완료 (gh-pages {sha[:7]})"
 
+    @staticmethod
+    def _autostart():
+        from . import autostart
+        return (autostart.enabled, autostart.set_enabled) if autostart.supported() else None
+
     def _wipe(self) -> AppData:
-        """전체 데이터 삭제: 로컬 설정, 저장된 동작, 토큰을 지우고 빈 상태로 돌아간다."""
+        """전체 데이터 삭제: 로컬 설정, 저장된 동작, 토큰, 메신저 기록, 자동 실행 등록을 지운다."""
+        from . import autostart
         configure_logging(self.store, False)  # 로그 파일 핸들을 닫아야 지울 수 있다
+        try:
+            autostart.set_enabled(False)
+        except OSError:
+            pass
+        self.service.data.messenger.enabled = False  # 기록 파일을 지우는 동안 새로 쓰지 않게
+        self.service.monitor = None
         self.store.wipe()
         self.service.reset_results()
         self.data = AppData()
