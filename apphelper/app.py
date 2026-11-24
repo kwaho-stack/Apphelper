@@ -112,6 +112,8 @@ class TrayApp:
 
     # ------------------------------------------------------------ 수명
     def start(self) -> None:
+        from .cover import cursor
+        cursor.restore()  # 지난번 가리기 중 비정상 종료로 커서가 숨겨진 채 남았을 경우 대비
         self.tray.show()
         self.service.start()
         self.service.request_publish()
@@ -277,12 +279,13 @@ class TrayApp:
     def _cover_tick(self) -> None:
         from .cover import EXIT_STOPPED, EXIT_UNLOCKED, EXIT_UNSUPPORTED
         code = self.cover.poll()
-        if code is None or code == EXIT_STOPPED:
+        if code is None:
             return
-        if code == EXIT_UNLOCKED:
-            self._skip_lock_once = True  # 방금 비밀번호를 쳤으니 편집 화면은 바로 연다
-            self.open_editor()
-        elif code == EXIT_UNSUPPORTED:
+        from .cover import cursor
+        cursor.restore()  # 가리기 프로세스가 강제 종료돼 커서를 못 되돌렸을 수도 있으니 앱도 한 번 더
+        if code in (EXIT_UNLOCKED, EXIT_STOPPED):
+            return  # 풀린 뒤에는 트레이에만 있는다 (편집 화면은 평소처럼 트레이에서 비밀번호로 연다)
+        if code == EXIT_UNSUPPORTED:
             self._cover_failed("이 Windows 버전에서는 화면 가리기를 쓸 수 없습니다 (Windows 10 2004 이상 필요).")
         else:
             self._cover_failed(f"화면 가리기가 예상치 않게 끝났습니다 (코드 {code}).")

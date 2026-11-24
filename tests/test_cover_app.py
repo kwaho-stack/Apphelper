@@ -31,6 +31,7 @@ def tray(app, tmp_path, monkeypatch):
     monkeypatch.setattr(appmod, "Store", lambda: Store(tmp_path / "data"))
     asked = []
     monkeypatch.setattr(appmod, "ask_password", lambda parent=None, retry=False: asked.append(1) or None)
+    monkeypatch.setattr(appmod, "ask_new_password", lambda parent=None, first=True: None)  # 실제 창이 뜨지 않게
     t = appmod.TrayApp(app)
     t.asked = asked
     yield t
@@ -50,7 +51,10 @@ def wait_for(cond, timeout=10):
     return False
 
 
-def test_cover_hides_editor_and_unlock_reopens_without_password(tray):
+def test_cover_hides_editor_and_unlock_stays_in_tray(tray, monkeypatch):
+    from apphelper.cover import cursor
+    restored = []
+    monkeypatch.setattr(cursor, "restore", lambda: restored.append(1))
     tray.verifier = make_verifier("abcd")
     tray._skip_lock_once = True
     tray.open_editor()
@@ -60,8 +64,12 @@ def test_cover_hides_editor_and_unlock_reopens_without_password(tray):
     assert not tray.editor.isVisible() and tray.cover.active
     tray.open_editor()                       # 가린 동안에는 열리지 않는다
     assert not tray.editor.isVisible()
-    assert wait_for(lambda: (tray._cover_tick(), tray.editor.isVisible())[1])
-    assert tray.asked == []                  # 비밀번호를 다시 묻지 않음
+    assert wait_for(lambda: (tray._cover_tick(), not tray.cover.active and bool(restored))[1])
+    assert not tray.editor.isVisible()       # 풀린 뒤에도 트레이에만 있다
+    assert tray.asked == []
+    tray.lock.set("abcd")
+    tray.open_editor()                       # 다시 열려면 평소처럼 비밀번호를 묻는다
+    assert tray.asked == [1] and not tray.editor.isVisible()
 
 
 def test_unsupported_windows_shows_message_and_editor(tray, monkeypatch):

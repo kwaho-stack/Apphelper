@@ -6,6 +6,7 @@
 - 저수준 키보드·마우스 후크: 사람이 친 입력(주입 표시 없음)은 버리고, 프로그램이 보낸 입력은 통과
 - 버린 키 입력 중 비밀번호가 완성되면 해제 → 'UNLOCKED' 출력 후 종료
 - 가리는 동안 절전·화면 꺼짐을 막는다 (매크로가 돌아야 하므로)
+- 가리는 동안 마우스 커서를 숨긴다 (cursor.py)
 
 앱과의 약속:
   표준 입력 첫 줄: {"salt": ..., "hash": ...} (세션용 비밀번호 검증값). 이후 'STOP' → 해제 없이 끝냄(테스트용)
@@ -21,6 +22,7 @@ import sys
 import threading
 from ctypes import wintypes
 
+from . import cursor
 from .keys import Unlocker
 
 WH_KEYBOARD_LL, WH_MOUSE_LL = 13, 14
@@ -190,6 +192,7 @@ def run(verifier: dict) -> int:
         return EXIT_HOOK
 
     kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED)
+    cursor.hide()  # 검은 화면 위에 마우스 커서가 보이지 않게
     user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
     user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW)
     user32.SetTimer(hwnd, TOPMOST_TIMER, 500, None)
@@ -210,6 +213,7 @@ def run(verifier: dict) -> int:
     finally:
         user32.UnhookWindowsHookEx(kb)
         user32.UnhookWindowsHookEx(mouse)
+        cursor.restore()
         kernel32.SetThreadExecutionState(ES_CONTINUOUS)
     if state["unlocked"]:
         say("UNLOCKED")

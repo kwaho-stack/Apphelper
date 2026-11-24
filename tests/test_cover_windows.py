@@ -35,3 +35,11 @@ def test_guard_starts_is_excluded_from_capture_and_stops():
     finally:
         c.stop(timeout=10)
     assert c.poll() == EXIT_STOPPED  # 해제 없이 STOP 으로 정상 종료 (후크·창 정리됨)
+
+
+def test_cursor_hide_and_restore_do_not_fail():
+    from apphelper.cover import cursor
+    try:
+        assert cursor.hide() in (True, False)
+    finally:
+        cursor.restore()
