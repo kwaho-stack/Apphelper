@@ -118,11 +118,24 @@ class Service:
         from .screenshots import ShotRecorder  # Qt 이미지 기능은 스크린샷이 필요할 때만
         return ShotRecorder(self.backend, self.shots_dir, slot.hour, slot.debug, label, now=self.now)
 
-    def _run(self, data: AppData, slot: Slot, label: str = ""):
+    def _run(self, data: AppData, slot: Slot, label: str = "",
+             cancel: Callable[[], bool] | None = None):
+        """cancel() 이 True 가 되면 다음 단계에서 멈춘다 (대기 중이면 0.05초 안에)."""
         recorder = self._recorder(slot, label)
+
+        def stopped() -> bool:
+            return self.scheduler.stopping or (cancel is not None and cancel())
+
+        def sleep(seconds: float) -> None:
+            if cancel is None:
+                self.scheduler.sleep(seconds)
+                return
+            end = time.monotonic() + max(seconds, 0)
+            while not stopped() and time.monotonic() < end:
+                self.scheduler.sleep(min(0.05, end - time.monotonic()))
+
         with self._run_lock:
-            result = run_slot(data, slot, self.backend, sleep=self.scheduler.sleep,
-                              should_stop=lambda: self.scheduler.stopping, observer=recorder)
+            result = run_slot(data, slot, self.backend, sleep=sleep, should_stop=stopped, observer=recorder)
         return result, (recorder.saved if recorder else [])
 
     def _execute(self, slot: Slot, data: AppData, when: datetime) -> None:
@@ -143,7 +156,24 @@ class Service:
         slot = data.slots[hour]
         if not slot.blocks:
             return f"{hour}시에 배치된 블록이 없습니다."
-        result, shots = self._run(data, slot, label="시범")
+        # 시범 작동은 Esc 로 취소할 수 있다 (예약 실행은 다른 프로그램에서 Esc 를 눌러도 멈추지 않게 제외)
+        esc = getattr(self.backend, "escape_pressed", None)
+        cancelled = False
+        if esc is not None:
+            esc()  # 시작 전에 눌렸던 기록은 버린다
+
+            def cancel() -> bool:
+                nonlocal cancelled
+                cancelled = cancelled or bool(esc())
+                return cancelled
+        else:
+            cancel = None
+        result, shots = self._run(data, slot, label="시범", cancel=cancel)
+        if cancelled:
+            msg = f"{hour}시 시범 작동을 Esc 로 취소했습니다."
+            if shots:
+                msg += f"\n스크린샷 {len(shots)}장 저장: {shots[0].parent}"
+            return msg
         lines = [f"{hour}시 시범 작동 " + ("완료" if result.ok else "실패")]
         if result.key_results:
             lines.append("핵심 crash 결과: " + " · ".join(result.key_results))

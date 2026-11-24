@@ -164,3 +164,32 @@ def test_capture_image_is_jpeg_and_scaled():
     assert mime == "image/jpeg" and data[:3] == b"\xff\xd8\xff"
     img = QImage.fromData(data)
     assert (img.width(), img.height()) == (1600, 800)
+
+
+def test_trial_run_cancelled_by_escape(tmp_path):
+    """시범 작동 중 Esc → 다음 단계에서 멈추고, 긴 대기도 바로 끝난다."""
+    import time as _time
+
+    d = make_data()
+    d.actions[0].steps = [Step("crash", x=10, y=10), Step("wait", ms=10_000), Step("crash", x=20, y=20)]
+    screen = Screen(True)
+    presses = iter([False, False, False])  # 시작 시 초기화 + 블록 전 확인 + 첫 단계 전 확인
+
+    def esc():
+        return next(presses, True)  # 그 뒤로는 Esc 가 눌린 상태
+    screen.escape_pressed = esc
+    svc = Service(d, screen, "", now=lambda: NOW)
+    start = _time.monotonic()
+    msg = svc.trial_run(d, 21)
+    assert "Esc 로 취소" in msg
+    assert screen.clicks == [(10, 10)]          # 두 번째 crash 와 핵심 crash 는 하지 않음
+    assert _time.monotonic() - start < 2        # 10초 대기를 기다리지 않음
+
+
+def test_scheduled_run_ignores_escape():
+    d = make_data()
+    screen = Screen(True)
+    screen.escape_pressed = lambda: True
+    svc = Service(d, screen, "", now=lambda: NOW)
+    svc._execute(d.slots[21], d, NOW)
+    assert screen.clicks == [(10, 10), (20, 20), (60, 40)]

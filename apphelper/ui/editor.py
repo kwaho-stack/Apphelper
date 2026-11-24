@@ -350,7 +350,7 @@ class SlotRow(QWidget):
 
     def add_slot_actions(self, menu: QMenu):
         ed = self.editor
-        trial = QAction("지금 시범 작동 (실제로 한 번 실행)", menu)
+        trial = QAction("지금 시범 작동 (실제로 한 번 실행 · Esc: 취소)", menu)
         trial.setEnabled(bool(self.slot.blocks) and ed.can_trial_run)
         trial.triggered.connect(lambda: ed.trial_run(self.slot.hour))
         menu.addAction(trial)

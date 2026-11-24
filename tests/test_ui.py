@@ -387,13 +387,13 @@ def test_editor_slot_menu_trial_run_and_debug(app, monkeypatch):
     menu = QtWidgets.QMenu()
     row.add_slot_actions(menu)
     acts = {act.text(): act for act in menu.actions()}
-    assert acts["지금 시범 작동 (실제로 한 번 실행)"].isEnabled()
+    assert acts["지금 시범 작동 (실제로 한 번 실행 · Esc: 취소)"].isEnabled()
 
     acts["상세 디버그 (매 동작마다 스크린샷)"].setChecked(True)
     assert ed.data.slots[7].debug and row.debug_label.isVisibleTo(ed)
 
     pos = ed.pos()
-    acts["지금 시범 작동 (실제로 한 번 실행)"].trigger()
+    acts["지금 시범 작동 (실제로 한 번 실행 · Esc: 취소)"].trigger()
     deadline = time.monotonic() + 5
     while not infos and time.monotonic() < deadline:
         app.processEvents()
@@ -403,7 +403,7 @@ def test_editor_slot_menu_trial_run_and_debug(app, monkeypatch):
 
     empty = QtWidgets.QMenu()
     ed.rows[8].add_slot_actions(empty)
-    assert not {act.text(): act for act in empty.actions()}["지금 시범 작동 (실제로 한 번 실행)"].isEnabled()
+    assert not {act.text(): act for act in empty.actions()}["지금 시범 작동 (실제로 한 번 실행 · Esc: 취소)"].isEnabled()
     ed.flush()
     assert saved and saved[-1].slots[7].debug
     ed.close()

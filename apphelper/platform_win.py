@@ -67,6 +67,10 @@ class WinBackend:
     def set_cursor(self, x: int, y: int) -> None:
         user32.SetCursorPos(int(x), int(y))
 
+    def escape_pressed(self) -> bool:
+        """Esc 가 지금 눌려 있거나 지난 확인 뒤에 눌렸으면 True (어느 창이 앞에 있어도 동작)."""
+        return bool(user32.GetAsyncKeyState(0x1B) & 0x8001)
+
     def click(self, x: int, y: int) -> None:
         self.set_cursor(x, y)
         time.sleep(0.01)
