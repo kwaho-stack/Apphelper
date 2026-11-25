@@ -50,18 +50,3 @@ def test_is_locked_false_on_normal_desktop():
     assert is_locked() in (True, False)  # 서비스 세션 CI 에서는 입력 데스크톱이 없을 수 있다
     assert wait_until(lambda: True, 0.1) and not wait_until(lambda: False, 0.1)
 
-
-def test_magnify_probe_reports(capsys):
-    """B 방식: CI Windows 에서 실제로 검게 만들고 캡처해 본다 (판정은 출력만, 화면은 반드시 되돌린다)."""
-    from apphelper.core.imagefind import grab_screen
-    from apphelper.cover import magnify
-    from apphelper.platform_win import WinBackend
-    b = WinBackend()
-    r = magnify.probe(lambda: grab_screen(b), seconds=1.0)
-    ok, text = magnify.verdict(r)
-    with capsys.disabled():
-        print(f"\nMAGNIFY-PROBE ok={r['ok']} err={r['error']!r} before={r['before']} during={r['during']} usable={ok}")
-    magnify.reset()
-    after = grab_screen(b).mean()
-    with capsys.disabled():
-        print(f"MAGNIFY-PROBE after-reset={after}")

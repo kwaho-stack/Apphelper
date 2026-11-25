@@ -456,8 +456,7 @@ class SettingsDialog(QDialog):
                  on_wipe: Callable[[], None], parent: QWidget | None = None,
                  on_change_password: Callable[[QWidget], bool] | None = None,
                  shots_dir: Path | None = None,
-                 on_change_cover_password: Callable[[QWidget], bool] | None = None,
-                 on_test_cover_b: Callable[[QWidget], None] | None = None):
+                 on_change_cover_password: Callable[[QWidget], bool] | None = None):
         super().__init__(parent)
         self.setWindowTitle("설정")
         self.resize(460, 280)
@@ -509,12 +508,6 @@ class SettingsDialog(QDialog):
             cpw.clicked.connect(lambda: on_change_cover_password(self) and
                                 QMessageBox.information(self, "검은 화면 비밀번호", "검은 화면 비밀번호를 정했습니다."))
             row.addWidget(cpw)
-        if on_test_cover_b is not None:
-            tb = QPushButton("B 방식 시험")
-            tb.setToolTip("화면 출력 전체를 검게 하는 방식(팝업도 못 뚫고 나옴)을 2초 동안 시험하고,\n"
-                          "그동안 캡처가 원래 화면을 보는지 확인합니다.")
-            tb.clicked.connect(lambda: on_test_cover_b(self))
-            row.addWidget(tb)
         if shots_dir is not None:
             shots = QPushButton("스크린샷 폴더 열기")
             shots.setToolTip(str(shots_dir))
@@ -577,24 +570,3 @@ class SettingsDialog(QDialog):
         self.settings = self._collect()
         self.accept()
 
-
-def show_probe_result(parent: QWidget | None, ok: bool, text: str, image=None) -> None:
-    """B 방식 시험 결과: 판정 + 검게 한 동안 캡처된 화면."""
-    from PySide6.QtGui import QPixmap
-    dlg = QDialog(parent)
-    dlg.setWindowTitle("B 방식 시험 결과")
-    lay = QVBoxLayout(dlg)
-    head = QLabel(("✅ " if ok else "❌ ") + text)
-    head.setWordWrap(True)
-    lay.addWidget(head)
-    if image is not None:
-        from .picker import rgb_to_qimage
-        lay.addWidget(QLabel("검게 한 동안 캡처된 화면:"))
-        pic = QLabel()
-        pic.setPixmap(QPixmap.fromImage(rgb_to_qimage(image)).scaledToWidth(
-            560, Qt.TransformationMode.SmoothTransformation))
-        lay.addWidget(pic)
-    box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
-    box.accepted.connect(dlg.accept)
-    lay.addWidget(box)
-    dlg.exec()

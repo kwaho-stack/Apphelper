@@ -429,10 +429,8 @@ class EditorWindow(QMainWindow):
                  messenger_log_dir: Path | None = None,
                  autostart=None,
                  on_cover: Callable[[], None] | None = None,
-                 on_change_cover_password: Callable[[QWidget], bool] | None = None,
-                 on_test_cover_b: Callable[[QWidget], None] | None = None):
+                 on_change_cover_password: Callable[[QWidget], bool] | None = None):
         super().__init__()
-        self._on_test_cover_b = on_test_cover_b
         self._on_change_password = on_change_password
         self._on_change_cover_password = on_change_cover_password
         self._on_trial_run = on_trial_run
@@ -603,8 +601,7 @@ class EditorWindow(QMainWindow):
     def open_settings(self):
         dlg = SettingsDialog(self.data.settings, self._on_test_publish, self._wipe, self,
                              on_change_password=self._on_change_password, shots_dir=self.shots_dir,
-                             on_change_cover_password=self._on_change_cover_password,
-                             on_test_cover_b=self._on_test_cover_b)
+                             on_change_cover_password=self._on_change_cover_password)
         if dlg.exec():
             self.data.settings = dlg.settings
             self.changed(refresh=False)

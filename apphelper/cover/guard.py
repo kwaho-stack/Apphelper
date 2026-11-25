@@ -9,6 +9,8 @@
   뒤 검은 화면을 없애고 종료
 - 가리는 동안 절전·화면 꺼짐을 막는다 (매크로가 돌아야 하므로)
 - 가리는 동안 마우스 커서를 숨긴다 (cursor.py)
+- 선택 상자 목록·메뉴·툴팁·새 창 같은 '항상 위' 팝업이 검은 창 위로 비치지 않게, 창이 나타나거나 순서가 바뀌는
+  순간(WinEvent)마다 즉시 검은 창을 다시 맨 위로 올린다. 놓친 경우를 위해 50ms 마다도 올린다.
 
 앱과의 약속:
   표준 입력 첫 줄: {"salt": ..., "hash": ...} (세션용 비밀번호 검증값). 이후 'STOP' → 해제 없이 끝냄(테스트용)
@@ -49,12 +51,20 @@ ES_CONTINUOUS, ES_SYSTEM_REQUIRED, ES_DISPLAY_REQUIRED = 0x80000000, 0x1, 0x2
 VK_CAPITAL = 0x14
 BLACK_BRUSH = 4
 TOPMOST_TIMER, ARM_TIMER = 1, 2
-FAST_TOPMOST_MS = 15  # 비상종료 중 맨 위 유지 간격 (평소 500ms)
+TOPMOST_MS = 50       # 평소 맨 위 유지 간격 (팝업은 WinEvent 로 즉시 처리, 이건 놓친 경우 대비)
+FAST_TOPMOST_MS = 15  # 비상종료 중 맨 위 유지 간격
+# WinEvent: 창이 나타남·순서 바뀜·앞으로 나옴·메뉴 열림 → 바로 검은 창을 다시 맨 위로
+EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MENUPOPUPSTART = 0x0003, 0x0006
+EVENT_OBJECT_SHOW, EVENT_OBJECT_REORDER = 0x8002, 0x8004
+WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS = 0x0000, 0x0002
+OBJID_WINDOW = 0
 
 LRESULT = ctypes.c_ssize_t
 _FUNCTYPE = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)  # Windows 가 아니어도 불러올 수는 있게
 HOOKPROC = _FUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
 WNDPROC = _FUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+WINEVENTPROC = _FUNCTYPE(None, wintypes.HANDLE, wintypes.DWORD, wintypes.HWND, wintypes.LONG, wintypes.LONG,
+                         wintypes.DWORD, wintypes.DWORD)
 
 
 class KBDLLHOOKSTRUCT(ctypes.Structure):
@@ -97,6 +107,10 @@ def _api():
     user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
     user32.SetTimer.argtypes = [wintypes.HWND, ctypes.c_size_t, wintypes.UINT, ctypes.c_void_p]
     user32.KillTimer.argtypes = [wintypes.HWND, ctypes.c_size_t]
+    user32.SetWinEventHook.restype = wintypes.HANDLE
+    user32.SetWinEventHook.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.HMODULE, WINEVENTPROC,
+                                       wintypes.DWORD, wintypes.DWORD, wintypes.DWORD]
+    user32.UnhookWinEvent.argtypes = [wintypes.HANDLE]
     user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     user32.DestroyWindow.argtypes = [wintypes.HWND]
     user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
@@ -196,7 +210,17 @@ def run(verifier: dict) -> int:
                 return 1  # 사람의 마우스 이동·클릭·휠은 버린다
         return user32.CallNextHookEx(None, code, wparam, lparam)
 
+    def raise_cover():
+        user32.SetWindowPos(state["hwnd"], HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+
+    def win_event(_hook, event, hwnd, id_object, _child, _thread, _time):
+        # 다른 프로그램 창(팝업 포함)이 나타나거나 앞으로 나오면 그려지기 전에 다시 덮는다
+        if state["hwnd"] and hwnd != state["hwnd"] and (
+                id_object == OBJID_WINDOW or event == EVENT_SYSTEM_MENUPOPUPSTART):
+            raise_cover()
+
     wndproc_cb, kb_cb, mouse_cb = WNDPROC(wndproc), HOOKPROC(kb_hook), HOOKPROC(mouse_hook)  # 참조 유지
+    event_cb = WINEVENTPROC(win_event)
 
     wc = WNDCLASSW()
     wc.lpfnWndProc = wndproc_cb
@@ -232,7 +256,12 @@ def run(verifier: dict) -> int:
     cursor.hide()  # 검은 화면 위에 마우스 커서가 보이지 않게
     user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
     user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW)
-    user32.SetTimer(hwnd, TOPMOST_TIMER, 500, None)
+    user32.SetTimer(hwnd, TOPMOST_TIMER, TOPMOST_MS, None)
+    flags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS  # 자기 창 이동으로 다시 불리지 않게
+    event_hooks = [h for h in (
+        user32.SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MENUPOPUPSTART, None, event_cb, 0, 0, flags),
+        user32.SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_REORDER, None, event_cb, 0, 0, flags),
+    ) if h]  # 실패해도 타이머로는 계속 덮는다
 
     def watch_stdin():
         for line in stdin:
@@ -248,6 +277,8 @@ def run(verifier: dict) -> int:
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
     finally:
+        for h in event_hooks:
+            user32.UnhookWinEvent(h)
         user32.UnhookWindowsHookEx(kb)
         user32.UnhookWindowsHookEx(mouse)
         cursor.restore()
