@@ -79,7 +79,7 @@ class Service:
         self.scheduler = Scheduler(self.data, self._execute, on_hour=self._on_hour, now=now)
 
     # ------------------------------------------------------------ 수명
-    REMOTE_POLL_SECONDS = 10      # 원격 요청 확인 주기 (closet 과 같음)
+    REMOTE_POLL_SECONDS = 5       # 원격 요청(전원·스크린샷) 확인 주기
     HEARTBEAT_SECONDS = 60        # PC 켜짐 상태 갱신 주기
     MIN_PUBLISH_INTERVAL = 30     # 결과 페이지 갱신 최소 간격 (Pages 빌드가 너무 잦지 않게)
 

@@ -184,7 +184,7 @@
         </div>
         <p class="status" id="powerMsg" role="status" aria-live="polite"></p>
         <p class="note">PC 앱 설정에서 <b>결과 페이지에서 PC 종료/다시시작 허용</b>을 켜 두어야 합니다.
-          PC 가 10초마다 명령을 확인하고, 2분 넘게 지난 명령은 실행하지 않습니다.</p>
+          PC 가 5초마다 명령을 확인하고, 2분 넘게 지난 명령은 실행하지 않습니다.</p>
       </div>
     </section>
 
@@ -435,7 +435,29 @@
       });
   }
 
-  function raw(path) { return api("GET", path, null, "application/vnd.github.raw"); }
+  // 브랜치 최신 커밋에서 파일을 읽는다 (없으면 null). contents API 는 GitHub CDN 에 수십 초~1분 캐시되어
+  // 방금 올라온 내용을 늦게 보여 주므로 쓰지 않는다. ref → 커밋 → 트리 → blob 순서로 읽고,
+  // 커밋이 그대로면 지난번 내용을 다시 쓴다 (평소에는 ref 조회 1번).
+  var fileCache = {};
+  function readFile(branch, path) {
+    return api("GET", "/git/ref/heads/" + branch)
+      .then(function (r) { return r.json(); })
+      .then(function (ref) {
+        var sha = ref.object.sha, key = branch + "/" + path, hit = fileCache[key];
+        if (hit && hit.sha === sha) return hit.data;
+        return api("GET", "/git/commits/" + sha).then(function (r) { return r.json(); })
+          .then(function (c) { return api("GET", "/git/trees/" + c.tree.sha); })
+          .then(function (r) { return r.json(); })
+          .then(function (t) {
+            var e = (t.tree || []).filter(function (x) { return x.path === path; })[0];
+            if (!e) return null;
+            return api("GET", "/git/blobs/" + e.sha, null, "application/vnd.github.raw")
+              .then(function (r) { return r.arrayBuffer(); });
+          })
+          .then(function (data) { fileCache[key] = { sha: sha, data: data }; return data; });
+      })
+      .catch(function (e) { if (e.status === 404) return null; throw e; });
+  }
 
   // PC 앱과 같은 키: PBKDF2-SHA256(토큰, "apphelper-screen-v1", 100000) → AES-256-GCM
   // 파일 형식: nonce(12바이트) + 암호문 + 태그
@@ -475,10 +497,10 @@
     for (var i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
     return btoa(s);
   }
-  function readEncrypted(path) {  // 없으면 null
-    return raw(path).then(function (r) { return r.arrayBuffer(); }).then(decryptJson)
-      .catch(function (e) { if (e.status === 404) return null; throw e; });
+  function readEncrypted(branch, path) {  // 없으면 null
+    return readFile(branch, path).then(function (buf) { return buf ? decryptJson(buf) : null; });
   }
+  function notFound() { var e = new Error("not found"); e.status = 404; return e; }
 
   function explain(e) {
     if (e && e.status === 401) return "토큰이 맞지 않거나 만료됐습니다. '토큰 변경'으로 다시 넣어 주세요.";
@@ -511,7 +533,7 @@
 
   // 암호화된 request.bin 의 한 항목(screenshot / power)만 바꾸고 나머지는 그대로 둔다
   function sendRequest(key, value) {
-    return readEncrypted("/contents/request.bin?ref=apphelper-remote")
+    return readEncrypted("apphelper-remote", "request.bin")
       .catch(function () { return {}; })  // 풀 수 없으면(예전 토큰) 새로 쓴다
       .then(function (cur) {
         var next = cur && typeof cur === "object" ? cur : {};
@@ -581,7 +603,7 @@
   function pollPower() {
     clearTimeout(powerTimer);
     if (!getToken()) return;
-    readEncrypted("/contents/status.bin?ref=apphelper-status")
+    readEncrypted("apphelper-status", "status.bin")
       .then(function (s) {
         if (s === null) { var nf = new Error("not found"); nf.status = 404; throw nf; }
         pcStatus = s;
@@ -600,7 +622,7 @@
       })
       .then(function () {
         renderPower();
-        powerTimer = setTimeout(pollPower, 10000);
+        powerTimer = setTimeout(pollPower, pendingPower ? 3000 : 10000);  // 명령을 보낸 뒤에는 자주 확인
       });
   }
 
@@ -612,7 +634,7 @@
       .then(function () {
         pendingPower = { id: cmd.id, label: label };
         powerMsg("\"" + label + "\" 전송됨 — PC 응답 대기 중 (보통 10초 안)");
-        setTimeout(pollPower, 4000);
+        pollPower();
       })
       .catch(function (e) { powerMsg(explain(e), true); });
   }
@@ -662,9 +684,8 @@
   function showShot(meta) {
     if (!meta || !getToken() || meta.id === shownShotId) return Promise.resolve();
     status("화면을 불러오는 중…");
-    return raw("/contents/screen.bin?ref=gh-pages")
-      .then(function (r) { return r.arrayBuffer(); })
-      .then(decryptBytes)
+    return readFile("gh-pages", "screen.bin")
+      .then(function (buf) { if (!buf) throw notFound(); return decryptBytes(buf); })
       .then(function (plain) {
         var img = $("shotImg");
         if (img.src) URL.revokeObjectURL(img.src);
@@ -680,7 +701,10 @@
 
   // 결과 전체는 data.bin 에 토큰으로 암호화되어 있다 (API 로 바로 읽어 Pages 배포를 기다리지 않음)
   function fetchLatestResults() {
-    return raw("/contents/data.bin?ref=gh-pages").then(function (r) { return r.arrayBuffer(); }).then(decryptJson);
+    return readFile("gh-pages", "data.bin").then(function (buf) {
+      if (!buf) throw notFound();
+      return decryptJson(buf);
+    });
   }
 
   function requestShot() {
@@ -702,10 +726,10 @@
             render();
             return showShot(j.screen);
           }
-          if (Date.now() - started > 120000) {
+          if (Date.now() - started > 180000) {
             waitingFor = null;
             btn.disabled = false;
-            status("2분 동안 응답이 없습니다. PC 앱이 켜져 있는지, 설정에서 '결과 페이지에서 스크린샷 요청 허용'이 " +
+            status("3분 동안 응답이 없습니다. PC 앱이 켜져 있는지, 설정에서 '결과 페이지에서 스크린샷 요청 허용'이 " +
                    "켜져 있는지 확인해 주세요.", true);
             return;
           }

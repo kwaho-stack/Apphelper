@@ -67,6 +67,13 @@ def test_results_merge_remote_local_wins():
     assert d["1"]["r"] == "작동" and d["2"]["m"] == 3
 
 
+BRANCH_FILES = {  # 브랜치별로 어떤 파일이 있는지
+    "gh-pages": ("results.json", "data.bin", "screen.bin"),
+    "apphelper-remote": ("request.json", "request.bin"),
+    "apphelper-status": ("status.bin",),
+}
+
+
 class FakeGitHub:
     def __init__(self, branch_exists=True, remote=None, request=None, token="tok"):
         self.calls = []
@@ -81,15 +88,8 @@ class FakeGitHub:
         assert token == self.token
         self.calls.append((method, url, body))
         if method == "GET":
-            path = url.split("/contents/", 1)[1].split("?", 1)[0]
-            raw = self.files.get(path)
-            if raw is None:
-                doc = {"request.json": self.request, "results.json": self.remote}.get(path)
-                raw = json.dumps(doc).encode() if doc is not None else None
-            if raw is None:
-                raise HttpError(404, "Not Found")
-            return {"content": base64.b64encode(raw).decode()}
-        if url.endswith("/git/blobs"):
+            return self._get(url.split("/repos/o/r", 1)[1])
+        if url.endswith("/git/blobs") and method == "POST":
             sha = f"blob{len(self.blobs) + 1}"
             self.blobs[sha] = base64.b64decode(body["content"])
             return {"sha": sha}
@@ -104,6 +104,39 @@ class FakeGitHub:
         if method == "POST" and url.endswith("/git/refs"):
             return {}
         raise AssertionError(url)
+
+    # 읽기: 실제 GitHub 처럼 ref → 커밋 → 트리 → blob. 내용이 바뀌면 커밋 sha 도 바뀐다.
+    def _branch_files(self, branch):
+        out = {}
+        for path in BRANCH_FILES.get(branch, ()):
+            raw = self.files.get(path)
+            if raw is None:
+                doc = {"request.json": self.request, "results.json": self.remote}.get(path)
+                raw = json.dumps(doc).encode() if doc is not None else None
+            if raw is not None:
+                out[path] = raw
+        return out
+
+    def _get(self, path):
+        import hashlib
+        assert "/contents/" not in path, "contents API 는 캐시 때문에 쓰지 않는다"
+        kind, _, rest = path.partition("/git/")[2].partition("/")
+        if kind == "ref":
+            branch = rest.split("heads/", 1)[1]
+            files = self._branch_files(branch)
+            if not files:
+                raise HttpError(404, "Not Found")
+            digest = hashlib.md5(json.dumps({k: v.hex() for k, v in files.items()}).encode()).hexdigest()
+            return {"object": {"sha": f"{branch}~{digest}"}}
+        if kind == "commits":
+            return {"tree": {"sha": "tree~" + rest}}
+        if kind == "trees":
+            branch = rest.split("~")[1]
+            return {"tree": [{"path": p, "sha": f"blob~{branch}~{p}"} for p in self._branch_files(branch)]}
+        if kind == "blobs":
+            _, branch, p = rest.split("~", 2)
+            return {"content": base64.b64encode(self._branch_files(branch)[p]).decode()}
+        raise AssertionError(path)
 
 
 def test_publish_orphan_force():
@@ -173,3 +206,18 @@ def test_service_reads_back_encrypted_results_after_restart():
     svc2 = Service(d, FakeScreen(), "<html>", transport=gh, now=lambda: datetime(2026, 10, 11, 9, 5))
     svc2.publish_now()
     assert svc2.results.get("2026-10-11", 3) is None
+
+
+def test_reads_follow_branch_head_and_reuse_unchanged_content():
+    """방금 올린 내용을 바로 읽고(캐시되는 contents API 를 쓰지 않음), 그대로면 ref 조회 1번으로 끝낸다."""
+    from apphelper.core.remote import REQUEST_FILE
+    gh = FakeGitHub(request={"screenshot": {"id": "a"}})
+    p = Publisher("o", "r", "tok", "", gh)
+    assert p.fetch_remote_request()["screenshot"]["id"] == "a"
+    before = len(gh.calls)
+    assert p.fetch_remote_request()["screenshot"]["id"] == "a"
+    reads = [c for c in gh.calls[before:]]
+    assert [c[1].split("/git/")[1].split("/")[0] for c in reads] == ["ref", "ref"]  # request.bin 없음 + request.json
+    gh.request = {"screenshot": {"id": "b"}}  # 페이지가 새 요청을 올림 → 커밋이 바뀜
+    assert p.fetch_remote_request()["screenshot"]["id"] == "b"
+    assert REQUEST_FILE == "request.json"

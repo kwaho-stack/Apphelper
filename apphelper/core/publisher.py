@@ -17,6 +17,9 @@ from typing import Any, Protocol
 
 log = logging.getLogger(__name__)
 
+# (owner, repo, branch, path) → (커밋 sha, 내용). 커밋이 바뀌지 않았으면 다시 받지 않는다.
+_FILE_CACHE: dict[tuple[str, str, str, str], tuple[str, bytes | None]] = {}
+
 API = "https://api.github.com"
 BRANCH = "gh-pages"
 RESULTS_FILE = "results.json"
@@ -65,15 +68,39 @@ class Publisher:
     def _call(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
         return self._t(method, self._url(path), self._token, body)
 
-    def _get_bytes(self, path: str, ref: str) -> bytes | None:
-        """레포 파일 내용 (contents API, base64). 없으면 None."""
+    def _ref_sha(self, branch: str) -> str | None:
+        """브랜치의 최신 커밋 sha (없으면 None). ref 는 바로 반영된다."""
         try:
-            info = self._call("GET", f"/contents/{path}?ref={ref}")
+            info = self._call("GET", f"/git/ref/heads/{branch}")
         except HttpError as e:
             if e.status == 404:
                 return None
             raise
-        return base64.b64decode(info.get("content", "") or "")
+        return info["object"]["sha"]
+
+    def _get_bytes(self, path: str, branch: str) -> bytes | None:
+        """브랜치 최신 커밋에서 파일 내용을 읽는다. 없으면 None.
+
+        contents API 는 GitHub CDN 에 수십 초~1분 캐시되어 방금 올린 내용을 늦게 보여 주므로 쓰지 않는다.
+        브랜치 ref → 커밋 → 트리 → blob 순서로 읽고, 커밋이 그대로면 지난번 내용을 다시 쓴다
+        (평소에는 ref 조회 1번으로 끝난다).
+        """
+        sha = self._ref_sha(branch)
+        if sha is None:
+            return None
+        key = (self.owner, self.repo, branch, path)
+        cached = _FILE_CACHE.get(key)
+        if cached is not None and cached[0] == sha:
+            return cached[1]
+        commit = self._call("GET", f"/git/commits/{sha}")
+        tree = self._call("GET", f"/git/trees/{commit['tree']['sha']}")
+        entry = next((e for e in tree.get("tree", []) if e.get("path") == path), None)
+        data = None
+        if entry is not None:
+            blob = self._call("GET", f"/git/blobs/{entry['sha']}")
+            data = base64.b64decode(blob.get("content", "") or "")
+        _FILE_CACHE[key] = (sha, data)
+        return data
 
     @property
     def key(self) -> bytes:
