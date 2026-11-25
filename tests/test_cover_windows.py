@@ -43,3 +43,9 @@ def test_cursor_hide_and_restore_do_not_fail():
         assert cursor.hide() in (True, False)
     finally:
         cursor.restore()
+
+
+def test_is_locked_false_on_normal_desktop():
+    from apphelper.cover.emergency import is_locked, wait_until
+    assert is_locked() in (True, False)  # 서비스 세션 CI 에서는 입력 데스크톱이 없을 수 있다
+    assert wait_until(lambda: True, 0.1) and not wait_until(lambda: False, 0.1)

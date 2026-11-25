@@ -5,7 +5,7 @@
   메신저 감시·스크린샷)에는 원래 화면이 보인다 (Windows 10 2004 이상)
 - 저수준 키보드·마우스 후크: 사람이 친 입력(주입 표시 없음)은 버리고, 프로그램이 보낸 입력은 통과
 - 사람이 키를 누르거나 클릭하면 5초 시계가 시작되고, 그 안에 버린 키 입력으로 비밀번호가 완성되면 해제
-  → 'UNLOCKED' 출력 후 종료. 5초 안에 못 치면 입력 비상종료(emergency.py: 창 닫기 → 메신저 끄기 → PC 잠금)
+  → 'UNLOCKED' 출력 후 종료. 5초 안에 못 치면 입력 비상종료(emergency.py: PC 잠금 → 창 닫기 → 메신저 끄기)
   뒤 검은 화면을 없애고 종료
 - 가리는 동안 절전·화면 꺼짐을 막는다 (매크로가 돌아야 하므로)
 - 가리는 동안 마우스 커서를 숨긴다 (cursor.py)
@@ -49,6 +49,7 @@ ES_CONTINUOUS, ES_SYSTEM_REQUIRED, ES_DISPLAY_REQUIRED = 0x80000000, 0x1, 0x2
 VK_CAPITAL = 0x14
 BLACK_BRUSH = 4
 TOPMOST_TIMER, ARM_TIMER = 1, 2
+FAST_TOPMOST_MS = 15  # 비상종료 중 맨 위 유지 간격 (평소 500ms)
 
 LRESULT = ctypes.c_ssize_t
 _FUNCTYPE = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)  # Windows 가 아니어도 불러올 수는 있게
@@ -145,6 +146,8 @@ def run(verifier: dict) -> int:
         if msg == WM_TIMER and wparam == ARM_TIMER:  # 첫 입력 뒤 5초 안에 비밀번호를 못 침
             user32.KillTimer(hwnd, ARM_TIMER)
             if gate.expire():
+                # 잠금 화면이 뜰 때까지 다른 창이 위로 비치지 않게 아주 자주 맨 위로 올린다
+                user32.SetTimer(hwnd, TOPMOST_TIMER, FAST_TOPMOST_MS, None)
                 # 오래 걸리는 일은 다른 스레드에서 (이 스레드가 막히면 입력 후크가 풀릴 수 있다)
                 threading.Thread(target=emergency_worker, args=(hwnd,), daemon=True).start()
             return 0

@@ -1,10 +1,12 @@
 """입력 비상종료 동작 (Windows 전용, 가리기 프로세스에서 쓴다).
 
 검은 화면에서 키를 누르거나 클릭한 뒤 5초 안에 비밀번호를 치지 못하면 차례로:
-  1. 화면에 떠 있는 프로그램 창을 모두 닫는다 (창의 X 를 누른 것과 같은 WM_CLOSE)
-  2. AtMessenger 프로세스를 강제로 끝낸다 (작업 관리자의 '작업 끝내기')
-  3. PC 를 잠근다 (Win+L 과 같은 LockWorkStation)
+  1. PC 를 잠그고 (Win+L 과 같은 LockWorkStation) 잠금 화면이 실제로 뜰 때까지 기다린다
+  2. 화면에 떠 있는 프로그램 창을 모두 닫는다 (창의 X 를 누른 것과 같은 WM_CLOSE)
+  3. AtMessenger 프로세스를 강제로 끝낸다 (작업 관리자의 '작업 끝내기')
 그 다음 가리기 프로세스가 검은 화면을 없앤다.
+잠금을 먼저 하는 이유: 창을 닫을 때 뜨는 '저장할까요?' 창이나 앞으로 나오는 창이 검은 화면 위로 잠깐
+비쳐 반짝이는데, 잠금 화면은 별도 화면이라 그 뒤에서 일어나는 일이 보이지 않는다.
 """
 from __future__ import annotations
 
@@ -134,11 +136,50 @@ def lock_pc() -> bool:
     return bool(ctypes.WinDLL("user32").LockWorkStation())
 
 
-def run(close_wait: float = 1.5) -> None:
-    """비상종료 순서대로 실행. 하나가 실패해도 다음 단계는 한다."""
+def is_locked() -> bool:
+    """잠금 화면(Winlogon 데스크톱)이 입력 화면이면 True. 사용자 화면에서는 'Default' 데스크톱이 입력을 받는다."""
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.OpenInputDesktop.restype = wintypes.HANDLE
+    user32.OpenInputDesktop.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    user32.GetUserObjectInformationW.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                                 wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    user32.CloseDesktop.argtypes = [wintypes.HANDLE]
+    desk = user32.OpenInputDesktop(0, False, 0x0001)  # DESKTOP_READOBJECTS
+    if not desk:
+        return True  # 잠금 화면은 일반 프로그램이 열 수 없다
+    try:
+        name = ctypes.create_unicode_buffer(64)
+        need = wintypes.DWORD()
+        if not user32.GetUserObjectInformationW(desk, 2, name, ctypes.sizeof(name), ctypes.byref(need)):  # UOI_NAME
+            return False
+        return name.value.lower() != "default"
+    finally:
+        user32.CloseDesktop(desk)
+
+
+def wait_until(cond, timeout: float, interval: float = 0.05) -> bool:
+    end = time.monotonic() + timeout
+    while True:
+        try:
+            if cond():
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        if time.monotonic() >= end:
+            return False
+        time.sleep(interval)
+
+
+def run(close_wait: float = 1.5, lock_wait: float = 3.0) -> None:
+    """비상종료 순서대로 실행: 잠금 → (잠금 화면 확인) → 창 닫기 → 메신저 끄기. 하나가 실패해도 다음은 한다."""
     keep = {os.getpid(), os.getppid()}  # 가리기 프로세스와 Apphelper 앱은 닫지 않는다
-    for step in (lambda: close_windows(keep), lambda: time.sleep(close_wait), kill_messenger, lock_pc):
+    steps = (lock_pc,
+             lambda: wait_until(is_locked, lock_wait),  # 잠금 화면이 뜬 뒤에 창을 닫아야 반짝임이 안 보인다
+             lambda: close_windows(keep),
+             lambda: time.sleep(close_wait),
+             kill_messenger)
+    for step in steps:
         try:
             step()
-        except Exception:  # noqa: BLE001 - 어떤 단계가 실패해도 잠금까지는 간다
+        except Exception:  # noqa: BLE001
             pass
