@@ -50,3 +50,18 @@ def test_is_locked_false_on_normal_desktop():
     assert is_locked() in (True, False)  # 서비스 세션 CI 에서는 입력 데스크톱이 없을 수 있다
     assert wait_until(lambda: True, 0.1) and not wait_until(lambda: False, 0.1)
 
+
+
+def test_wincapture_smoke():
+    """창 찾기·직접 캡처가 오류 없이 도는지 (CI 화면에 창이 없으면 건너뜀)."""
+    from apphelper import wincapture
+    from apphelper.platform_win import WinBackend
+    w, h = WinBackend().screen_size()
+    ref = wincapture.window_at(w // 2, h // 2) or wincapture.window_at(1, h - 1)
+    if ref is None:
+        pytest.skip("화면에 창이 없음")
+    got = wincapture.grab_messenger(ref)
+    if isinstance(got, str):
+        pytest.skip(got.encode("ascii", "replace").decode())
+    img, (x, y) = got
+    assert img.ndim == 3 and img.shape[2] == 3 and img.shape[0] > 0

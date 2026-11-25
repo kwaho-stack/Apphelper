@@ -14,7 +14,9 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.crash import average_color
-from ..core.messenger import KOR, Anchor, MessengerLog, Point, classify, import_mess_folder
+from ..core.messenger import (
+    KOR, Anchor, MessengerLog, Point, WindowFrame, classify, import_mess_folder, rebase,
+)
 from ..core.power import MODE_NAMES, PowerScheduler
 from .picker import pick_coordinate
 
@@ -40,6 +42,24 @@ def _fmt_remaining(seconds: float) -> str:
 
 # ------------------------------------------------------------------ 메신저 상태
 
+def window_at(x: int, y: int):
+    """화면 (x, y) 에 있는 창 (WindowRef). Windows 가 아니면 None. 테스트에서 바꿔 끼운다."""
+    import sys
+    if sys.platform != "win32":
+        return None
+    from ..wincapture import window_at as f
+    return f(x, y)
+
+
+def grab_messenger(ref):
+    """(그림, 창 위치) 또는 실패 이유. 테스트에서 바꿔 끼운다."""
+    import sys
+    if sys.platform != "win32":
+        return "Windows 에서만 쓸 수 있습니다"
+    from ..wincapture import grab_messenger as f
+    return f(ref)
+
+
 class MessengerPanel(QWidget):
     """메신저 상태 감시 설정. 바꾸면 editor.data.messenger 에 바로 반영되고 자동 저장된다."""
 
@@ -51,6 +71,19 @@ class MessengerPanel(QWidget):
 
         self.enabled = QCheckBox("메신저 상태 감시 사용")
         self.enabled.toggled.connect(self._apply)
+        self._capture_error = ""
+
+        # 가려져도 읽기 (메신저 창 직접 캡처)
+        self.capture = QCheckBox("가려져도 읽기 (메신저 창을 직접 캡처 — 다른 창이 덮어도 됨, 최소화는 안 됨)")
+        self.capture.setToolTip("화면 대신 메신저 창의 그림을 직접 읽습니다. 메신저 창을 옮겨도 좌표를 다시 딸 필요가 없습니다.\n"
+                                "켤 때 주 대상 좌표에 있는 창을 메신저 창으로 기억합니다 (그때는 메신저가 보여야 함).")
+        self.capture.toggled.connect(self._toggle_capture)
+        cap_test = QPushButton("메신저 창 캡처 시험")
+        cap_test.setToolTip("메신저 창을 다른 창으로 덮어 둔 채 눌러 보세요. 직접 찍은 메신저 창 그림을 보여 줍니다.")
+        cap_test.clicked.connect(self._test_capture)
+        crow = QHBoxLayout()
+        crow.addWidget(self.capture, 1)
+        crow.addWidget(cap_test)
 
         # 주 대상
         self.name = QLineEdit()
@@ -135,6 +168,7 @@ class MessengerPanel(QWidget):
 
         left = QVBoxLayout()
         left.addWidget(self.enabled)
+        left.addLayout(crow)
         left.addWidget(tbox)
         left.addWidget(abox)
         left.addWidget(obox, 1)
@@ -163,6 +197,7 @@ class MessengerPanel(QWidget):
         self._loading = True
         c = self.cfg
         self.enabled.setChecked(c.enabled)
+        self.capture.setChecked(c.capture_window)
         self.name.setText(c.target.name)
         self.tx.setValue(c.target.x)
         self.ty.setValue(c.target.y)
@@ -204,21 +239,101 @@ class MessengerPanel(QWidget):
         self.refresh_target_now()
         self.editor.changed(refresh=False)
 
-    def _read_rgb(self, x: int, y: int) -> tuple[int, int, int] | None:
+    def _source(self):
+        """색을 읽을 곳. '가려져도 읽기'면 메신저 창을 찍고, 창이 옮겨졌으면 좌표를 같이 옮겨 보여 준다."""
+        c = self.cfg
+        if not c.capture_window:
+            return self.editor.backend
+        got = grab_messenger(c.window)
+        if not isinstance(got, tuple):
+            self._capture_error = str(got)
+            return WindowFrame(None, (c.window.x, c.window.y))
+        self._capture_error = ""
+        image, (wx, wy) = got
+        if rebase(c, wx, wy):  # 창을 옮겼다 → 화면 좌표도 같이 옮겨서 표시
+            self.load()
+            self.editor.changed(refresh=False)
+        return WindowFrame(image, (c.window.x, c.window.y))
+
+    def _read_rgb(self, x: int, y: int, source=None) -> tuple[int, int, int] | None:
         try:
-            rgb = average_color(self.editor.backend, x, y, self.cfg.sample_radius * 2 + 1)
+            rgb = average_color(source or self._source(), x, y, self.cfg.sample_radius * 2 + 1)
         except ValueError:
             return None
         return tuple(int(round(v)) for v in rgb)
+
+    def _toggle_capture(self, on: bool):
+        if self._loading:
+            return
+        c = self.cfg
+        if on:
+            if not c.ready:
+                QMessageBox.warning(self, "가려져도 읽기", "주 대상 좌표를 먼저 지정하세요.")
+                self._set_capture(False)
+                return
+            ref = window_at(c.target.x, c.target.y)
+            if ref is None:
+                QMessageBox.warning(self, "가려져도 읽기",
+                                    "주 대상 좌표에서 메신저 창을 찾지 못했습니다. 메신저 창이 보이게 한 뒤 다시 켜세요.")
+                self._set_capture(False)
+                return
+            if ref.exe.lower().startswith("apphelper"):
+                QMessageBox.warning(self, "가려져도 읽기",
+                                    "주 대상 좌표가 Apphelper 창에 가려져 있습니다. 편집 화면을 옮겨 메신저가 보이게 한 뒤 다시 켜세요.")
+                self._set_capture(False)
+                return
+            c.window = ref  # 지금 화면 좌표 = 지금 창 위치 기준
+            got = grab_messenger(ref)
+            if not isinstance(got, tuple):
+                QMessageBox.warning(self, "가려져도 읽기", f"메신저 창을 캡처하지 못했습니다: {got}")
+                self._set_capture(False)
+                return
+        c.capture_window = on
+        self.refresh_target_now()
+        self.editor.changed(refresh=False)
+
+    def _set_capture(self, on: bool):
+        self._loading = True
+        self.capture.setChecked(on)
+        self._loading = False
+
+    def _test_capture(self):
+        c = self.cfg
+        ref = c.window if c.window.ready else (window_at(c.target.x, c.target.y) if c.ready else None)
+        if ref is None:
+            QMessageBox.warning(self, "메신저 창 캡처 시험",
+                                "메신저 창을 알 수 없습니다. 주 대상 좌표를 메신저 아이콘에 지정한 뒤(메신저가 보이게) 다시 누르세요.")
+            return
+        got = grab_messenger(ref)
+        if not isinstance(got, tuple):
+            QMessageBox.warning(self, "메신저 창 캡처 시험", str(got))
+            return
+        image, (wx, wy) = got
+        dark = float(image.mean()) < 8
+        origin = (c.window.x, c.window.y) if c.window.ready else (wx, wy)
+        frame = WindowFrame(image, origin)
+        try:
+            state = KOR.get(classify(average_color(frame, c.target.x, c.target.y, c.sample_radius * 2 + 1)),
+                            "색이 애매함")
+        except ValueError:
+            state = "좌표가 창 밖"
+        text = (f"{ref.exe} 창을 직접 찍은 그림입니다 (빨간 원 = 주 대상). 주 대상: {state}\n"
+                + ("⚠ 그림이 검게 찍혔습니다. 이 PC 에서는 '가려져도 읽기'를 쓸 수 없습니다." if dark else
+                   "메신저 창이 다른 창에 덮인 상태에서도 그림이 제대로 보이면 '가려져도 읽기'를 켜서 쓸 수 있습니다."))
+        show_capture(self, text, image, (c.target.x - origin[0], c.target.y - origin[1]))
 
     def refresh_target_now(self):
         c = self.cfg
         if not c.ready:
             self.target_now.setText("좌표를 먼저 지정하세요")
             return
-        rgb = self._read_rgb(c.target.x, c.target.y)
+        source = self._source()  # 창이 옮겨졌으면 여기서 좌표가 먼저 맞춰진다
+        rgb = self._read_rgb(c.target.x, c.target.y, source=source)
         if rgb is None:
-            self.target_now.setText("⚠ 화면 밖 좌표입니다")
+            if c.capture_window:
+                self.target_now.setText(f"⚠ {self._capture_error or '좌표가 메신저 창 밖입니다'}")
+            else:
+                self.target_now.setText("⚠ 화면 밖 좌표입니다")
             return
         state = classify(rgb)
         name = KOR.get(state, "색이 애매함 — 아이콘 정중앙으로 다시 지정하세요")
@@ -226,7 +341,10 @@ class MessengerPanel(QWidget):
 
     # 좌표 따기
     def _pick(self):
-        return pick_coordinate(self.editor.backend, [self.editor])
+        pt = pick_coordinate(self.editor.backend, [self.editor])
+        if pt and self.cfg.capture_window:
+            self._source()  # 메신저 창이 옮겨졌으면 기존 좌표를 먼저 지금 위치로 맞춘다
+        return pt
 
     def _pick_target(self):
         pt = self._pick()
@@ -237,7 +355,8 @@ class MessengerPanel(QWidget):
     def _pick_anchor(self):
         pt = self._pick()
         if pt:
-            rgb = self._read_rgb(*pt)
+            rgb = self._read_rgb(*pt) or (self._read_rgb(*pt, source=self.editor.backend)
+                                         if self.cfg.capture_window else None)
             self.cfg.anchor = Anchor(pt[0], pt[1], rgb or (255, 255, 255))  # 그 자리의 지금 색이 기준색
             self.load()
             self.editor.changed(refresh=False)
@@ -302,6 +421,36 @@ class MessengerPanel(QWidget):
             since = f" <span style='color:gray'>· {p['since'][11:16]}부터</span>" if p["since"] else ""
             rows.append(f"<b>{p['name']}</b> <span style='color:{color}'>● {p['state']}</span>{since}")
         self.live.setText("<br>".join(rows))
+
+
+def show_capture(parent, text: str, image, mark: tuple[int, int] | None) -> None:
+    """메신저 창 캡처 시험 결과 창."""
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
+    from PySide6.QtWidgets import QDialog, QDialogButtonBox
+    from .picker import rgb_to_qimage
+    dlg = QDialog(parent)
+    dlg.setWindowTitle("메신저 창 캡처 시험")
+    lay = QVBoxLayout(dlg)
+    label = QLabel(text)
+    label.setWordWrap(True)
+    lay.addWidget(label)
+    img = rgb_to_qimage(image)
+    if mark is not None:
+        p = QPainter(img)
+        p.setPen(QPen(QColor("#ef4444"), 3))
+        p.drawEllipse(QPoint(*mark), 12, 12)
+        p.end()
+    pix = QPixmap.fromImage(img)
+    if pix.width() > 700 or pix.height() > 700:
+        pix = pix.scaled(700, 700, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    pic = QLabel()
+    pic.setPixmap(pix)
+    lay.addWidget(pic)
+    box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+    box.accepted.connect(dlg.accept)
+    lay.addWidget(box)
+    dlg.exec()
 
 
 # ------------------------------------------------------------------ PC 전원

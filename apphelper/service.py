@@ -42,9 +42,12 @@ class Service:
         messenger_log_dir: Path | None = None,
         remote_state_path: Path | None = None,
         clock: Callable[[], float] = time.time,
+        window_grabber: Callable | None = None,
     ):
         self.data = data.clone()
         self.clock = clock
+        # 메신저 '가려져도 읽기': WindowRef → (그림, 창 위치) 또는 실패 이유 문자열 (wincapture.grab_messenger)
+        self.window_grabber = window_grabber
         # 메신저 상태 감시 (설정에서 켜고 좌표가 있을 때만 돈다)
         self.messenger_log = MessengerLog(messenger_log_dir) if messenger_log_dir else None
         self.monitor: MessengerMonitor | None = None
@@ -251,11 +254,21 @@ class Service:
         monitor = self._ensure_monitor()
         if monitor is None:
             return False
+        source = self.messenger_source(monitor.config)
         with self._monitor_lock:
-            changed, _ = monitor.step(self.backend, self.now())
+            changed, _ = monitor.step(source, self.now())
         if changed:
             self.request_publish()
         return changed
+
+    def messenger_source(self, cfg):
+        """메신저 색을 읽을 곳: 평소엔 화면, '가려져도 읽기'면 메신저 창을 직접 찍은 그림."""
+        if not cfg.capture_window:
+            return self.backend
+        from .core.messenger import WindowFrame
+        got = self.window_grabber(cfg.window) if self.window_grabber else "창 캡처를 쓸 수 없습니다"
+        image = got[0] if isinstance(got, tuple) else None  # 못 찍으면 모두 '확인불가'
+        return WindowFrame(image, (cfg.window.x, cfg.window.y))
 
     def _messenger_loop(self) -> None:
         while not self._stop.is_set():

@@ -20,6 +20,14 @@ INSTANCE_NAME = "apphelper-single-instance"
 log = logging.getLogger("apphelper")
 
 
+def _window_grabber():
+    """메신저 창 직접 캡처 (Windows 에서만)."""
+    if sys.platform != "win32":
+        return None
+    from .wincapture import grab_messenger
+    return grab_messenger
+
+
 def configure_logging(store: Store, enabled: bool) -> None:
     """로컬 로그는 기본 OFF. 디버그 설정을 켰을 때만 data/debug.log 에 남긴다."""
     root = logging.getLogger()
@@ -71,7 +79,8 @@ class TrayApp:
         self.service = Service(self.data, self.backend, self.page_html, shots_dir=self.shots_dir,
                                capture_image=lambda: capture_image(self.backend),
                                messenger_log_dir=self.messenger_log_dir,
-                               remote_state_path=self.store.data_dir / "remote_state.json")
+                               remote_state_path=self.store.data_dir / "remote_state.json",
+                               window_grabber=_window_grabber())
         self.editor: EditorWindow | None = None
         self.warning = None
         # 화면 가리기: 전용 비밀번호(data/cover.json 에 검증값만), 가리기 프로세스 제어

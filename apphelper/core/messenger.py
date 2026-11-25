@@ -4,6 +4,8 @@
   - 같은 상태가 confirm_count 번 연속 읽히면 상태가 바뀐 것으로 보고 일별 txt 로그에 기록한다
     (기록 시각은 그 상태가 처음 보인 시각, 날짜는 새벽 rollover_hour 시 기준)
   - 기준점(anchor) 색이 등록값과 다르면(로그인 화면/창 가림) '확인불가'
+  - '가려져도 읽기'(capture_window)를 켜면 화면 대신 메신저 창을 직접 캡처해서 읽는다 → 다른 창이 덮어도 된다
+    (좌표는 화면 좌표로 보이지만 내부적으로는 창 왼쪽 위 기준으로 쓴다: window 의 x, y 가 그때의 창 위치)
   - 결과 페이지용 데이터(현재 상태, 오늘+어제 변경 로그, 추가 인원 현황)를 만든다
 로그 형식은 mess 와 같다: 'YYYY-MM-DD HH:MM:SS  온라인'
 """
@@ -55,6 +57,28 @@ class Anchor:
 
 
 @dataclass
+class WindowRef:
+    """메신저 창 식별(실행 파일 이름 + 창 종류)과, 좌표를 정할 때 창이 있던 위치(왼쪽 위, 화면 좌표)."""
+    exe: str = ""
+    cls: str = ""
+    x: int = 0
+    y: int = 0
+
+    @property
+    def ready(self) -> bool:
+        return bool(self.exe)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"exe": self.exe, "cls": self.cls, "x": self.x, "y": self.y}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None) -> "WindowRef":
+        d = d or {}
+        return cls(str(d.get("exe", "") or ""), str(d.get("cls", "") or ""),
+                   int(d.get("x", 0) or 0), int(d.get("y", 0) or 0))
+
+
+@dataclass
 class MessengerConfig:
     enabled: bool = False
     poll_interval: int = 5        # 몇 초마다 확인할지
@@ -66,6 +90,8 @@ class MessengerConfig:
     target: Point = field(default_factory=Point)
     anchor: Anchor = field(default_factory=Anchor)
     others: list[Point] = field(default_factory=list)
+    capture_window: bool = False  # 가려져도 읽기 (메신저 창 직접 캡처)
+    window: WindowRef = field(default_factory=WindowRef)
 
     @property
     def ready(self) -> bool:
@@ -78,6 +104,7 @@ class MessengerConfig:
             "confirm_count": self.confirm_count, "anchor_tolerance": self.anchor_tolerance,
             "max_web_events": self.max_web_events, "target": self.target.to_dict(),
             "anchor": self.anchor.to_dict(), "others": [p.to_dict() for p in self.others],
+            "capture_window": self.capture_window, "window": self.window.to_dict(),
         }
 
     @classmethod
@@ -95,7 +122,50 @@ class MessengerConfig:
         c.target = Point.from_dict(d.get("target"))
         c.anchor = Anchor.from_dict(d.get("anchor"))
         c.others = [Point.from_dict(p) for p in d.get("others", []) if isinstance(p, dict)]
+        c.capture_window = bool(d.get("capture_window", False))
+        c.window = WindowRef.from_dict(d.get("window"))
         return c
+
+
+def rebase(cfg: MessengerConfig, x: int, y: int) -> bool:
+    """메신저 창이 (x, y) 로 옮겨졌을 때 모든 좌표를 같이 옮긴다 (창 안에서의 위치는 그대로). 바뀌었으면 True."""
+    dx, dy = x - cfg.window.x, y - cfg.window.y
+    if not (dx or dy):
+        return False
+    for p in [cfg.target] + cfg.others:
+        if p.x or p.y:
+            p.x, p.y = p.x + dx, p.y + dy
+    if cfg.anchor.x:
+        cfg.anchor.x, cfg.anchor.y = cfg.anchor.x + dx, cfg.anchor.y + dy
+    cfg.window.x, cfg.window.y = x, y
+    return True
+
+
+class WindowFrame:
+    """메신저 창을 직접 캡처한 그림을 화면처럼 읽게 해 주는 어댑터 (ScreenBackend 의 screen_size/grab).
+
+    image: (h, w, 3) RGB 배열 (None 이면 창을 못 찍음 → 모든 읽기가 '확인불가'),
+    origin: 좌표를 정할 때 창이 있던 화면 위치. 화면 좌표 p 는 창 안의 (p - origin) 을 읽는다.
+    """
+
+    def __init__(self, image, origin: tuple[int, int]):
+        self.image = image
+        self.origin = origin
+
+    def screen_size(self) -> tuple[int, int]:
+        if self.image is None:
+            return (1 << 30, 1 << 30)
+        h, w = self.image.shape[:2]
+        return self.origin[0] + w, self.origin[1] + h
+
+    def grab(self, left: int, top: int, width: int, height: int):
+        if self.image is None:
+            raise ValueError("메신저 창을 캡처하지 못했습니다 (꺼짐·최소화)")
+        x, y = left - self.origin[0], top - self.origin[1]
+        h, w = self.image.shape[:2]
+        if x < 0 or y < 0 or x + width > w or y + height > h:
+            raise ValueError("좌표가 메신저 창 밖입니다")
+        return [[tuple(int(v) for v in px) for px in row] for row in self.image[y:y + height, x:x + width]]
 
 
 # ---------------------------------------------------------------- 색 → 상태
