@@ -60,7 +60,7 @@ def test_magnify_probe_reports(capsys):
     r = magnify.probe(lambda: grab_screen(b), seconds=1.0)
     ok, text = magnify.verdict(r)
     with capsys.disabled():
-        print(f"\nMAGNIFY-PROBE ok={r['ok']} err={r['error']!r} before={r['before']} during={r['during']} -> {ok}: {text}")
+        print(f"\nMAGNIFY-PROBE ok={r['ok']} err={r['error']!r} before={r['before']} during={r['during']} usable={ok}")
     magnify.reset()
     after = grab_screen(b).mean()
     with capsys.disabled():
