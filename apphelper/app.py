@@ -113,8 +113,9 @@ class TrayApp:
 
     # ------------------------------------------------------------ 수명
     def start(self) -> None:
-        from .cover import cursor
+        from .cover import cursor, magnify
         cursor.restore()  # 지난번 가리기 중 비정상 종료로 커서가 숨겨진 채 남았을 경우 대비
+        magnify.reset()
         self.tray.show()
         self.service.start()
         self.service.request_publish()
@@ -260,6 +261,26 @@ class TrayApp:
         return True
 
     # ------------------------------------------------------------ 화면 가리기
+    def test_cover_b(self, parent=None) -> None:
+        """방법 B(화면 출력 전체를 검게) 시험: 2초 동안 검게 한 상태에서 캡처가 원래 화면을 보는지 확인."""
+        from PySide6.QtWidgets import QMessageBox
+        from .core.imagefind import grab_screen
+        from .cover.magnify import probe, verdict
+        if QMessageBox.information(parent, "검은 화면 B 방식 시험",
+                                   "확인을 누르면 약 2초 동안 화면 전체가 검게 됐다가 돌아옵니다.\n"
+                                   "그동안 화면을 캡처해서, 매크로·감시가 원래 화면을 볼 수 있는지 확인합니다.\n"
+                                   "밝은 창(예: 메모장, 웹 페이지)이 보이는 상태에서 시험하세요.",
+                                   QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel) \
+                != QMessageBox.StandardButton.Ok:
+            return
+        try:
+            result = probe(lambda: grab_screen(self.backend))
+        except Exception as e:  # noqa: BLE001
+            result = {"ok": False, "error": str(e), "before": 0.0, "during": None, "image": None}
+        ok, text = verdict(result)
+        from .ui.dialogs import show_probe_result
+        show_probe_result(parent, ok, text, result.get("image"))
+
     def start_cover(self) -> None:
         """편집 창을 트레이로 숨기고 화면을 검게 가린다.
 
@@ -319,7 +340,8 @@ class TrayApp:
                                        power=self.service.power, on_power_now=self.power_now,
                                        messenger_log_dir=self.messenger_log_dir,
                                        autostart=self._autostart(), on_cover=self.start_cover,
-                                       on_change_cover_password=self.change_cover_password)
+                                       on_change_cover_password=self.change_cover_password,
+                                       on_test_cover_b=self.test_cover_b)
         self.editor.show()
         self.editor.setWindowState(self.editor.windowState() & ~Qt.WindowState.WindowMinimized)
         self.editor.raise_()

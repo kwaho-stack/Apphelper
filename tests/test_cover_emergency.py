@@ -91,3 +91,31 @@ def test_service_puts_emergency_in_results_and_keeps_it_after_restart(tmp_path):
     svc2.request_publish = lambda: None
     svc2.clear_emergency()
     assert "emergency" not in svc2.build_results() and mk().emergency_at is None
+
+
+def test_magnify_matrices_and_verdict():
+    from apphelper.cover import magnify
+    m = lambda v: [v[i * 5:(i + 1) * 5] for i in range(5)]  # noqa: E731
+    black, ident = m(magnify.BLACK), m(magnify.IDENTITY)
+    assert all(black[r][c] == 0 for r in range(5) for c in range(3))  # 출력 r,g,b 는 항상 0
+    assert black[3][3] == 1 and black[4][4] == 1
+    assert all(ident[r][c] == (1 if r == c else 0) for r in range(5) for c in range(5))
+    assert magnify.verdict({"ok": True, "error": "", "before": 120.0, "during": 118.0})[0]
+    assert not magnify.verdict({"ok": True, "error": "", "before": 120.0, "during": 0.5})[0]
+    assert not magnify.verdict({"ok": True, "error": "", "before": 2.0, "during": 2.0})[0]
+    assert not magnify.verdict({"ok": False, "error": "x", "before": 1.0, "during": None})[0]
+    assert magnify.Magnifier().black()[0] is False or __import__("sys").platform == "win32"
+
+
+def test_settings_has_b_test_button(qtbot=None):
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])  # noqa: F841
+    from apphelper.core.model import Settings
+    from apphelper.ui.dialogs import SettingsDialog
+    called = []
+    dlg = SettingsDialog(Settings(), lambda s: "", lambda: None, on_test_cover_b=lambda p: called.append(p))
+    btn = [b for b in dlg.findChildren(QtWidgets.QPushButton) if b.text() == "B 방식 시험"][0]
+    btn.click()
+    assert called == [dlg]
