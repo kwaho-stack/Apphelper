@@ -10,7 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .guard import EXIT_STOPPED, EXIT_UNLOCKED, EXIT_UNSUPPORTED  # noqa: F401
+from .guard import EXIT_EMERGENCY, EXIT_STOPPED, EXIT_UNLOCKED, EXIT_UNSUPPORTED  # noqa: F401
 
 CREATE_NO_WINDOW = 0x08000000
 

@@ -2,7 +2,8 @@
 
 - 한/영 상태와 상관없이 영문 자판(US) 기준으로 읽는다 → 비밀번호는 영문·숫자·기호만 가능
 - 틀린 글자가 섞여도 마지막에 비밀번호가 정확히 입력되면 해제 (Enter 필요 없음), Backspace 는 한 글자 지움
-- 비밀번호 자체는 넘기지 않는다: 편집 화면 잠금을 풀 때 만든 세션용 검증값(무작위 salt + SHA-256)만 쓴다
+- 비밀번호 자체는 넘기지 않는다: 검은 화면 비밀번호의 검증값(무작위 salt + SHA-256)만 쓴다
+- 첫 입력(키·클릭) 뒤 5초 안에 비밀번호를 못 치면 입력 비상종료 (Gate)
 """
 from __future__ import annotations
 
@@ -88,3 +89,53 @@ class Unlocker:
                 self.buf = ""
                 return True
         return False
+
+
+ARM_SECONDS = 5  # 첫 입력(키 또는 클릭) 뒤 비밀번호를 칠 수 있는 시간
+
+
+class Gate:
+    """검은 화면 입력 처리: 첫 입력으로 5초 시계가 시작되고, 그 안에 비밀번호가 완성되면 해제, 아니면 비상종료.
+
+    Win32 타이머는 바깥(guard.py)이 맡고, 여기서는 상태만 바꾼다. 각 메서드는 할 일을 돌려준다:
+      "arm"     → 지금 5초 타이머를 시작하라
+      "unlock"  → 해제하라
+      None      → 할 일 없음
+    """
+
+    def __init__(self, verifier: dict[str, str], caps: bool = False):
+        self.unlocker = Unlocker(verifier, caps)
+        self.armed = False
+        self.done: str | None = None  # "unlock" | "emergency"
+
+    def _arm(self) -> str | None:
+        if self.armed:
+            return None
+        self.armed = True
+        return "arm"
+
+    def key(self, vk: int, down: bool) -> list[str]:
+        if self.done:
+            return []
+        actions = []
+        if down:  # 어떤 키든 누르면 시작 (Shift 포함)
+            a = self._arm()
+            if a:
+                actions.append(a)
+        if self.unlocker.feed(vk, down):
+            self.done = "unlock"
+            actions.append("unlock")
+        return actions
+
+    def click(self) -> list[str]:
+        if self.done:
+            return []
+        a = self._arm()
+        return [a] if a else []
+
+    def expire(self) -> bool:
+        """5초가 지났다. 아직 안 풀렸으면 비상종료 → True."""
+        if self.done:
+            return False
+        self.done = "emergency"
+        return True

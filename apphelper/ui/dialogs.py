@@ -455,7 +455,8 @@ class SettingsDialog(QDialog):
     def __init__(self, settings: Settings, on_test: Callable[[Settings], str],
                  on_wipe: Callable[[], None], parent: QWidget | None = None,
                  on_change_password: Callable[[QWidget], bool] | None = None,
-                 shots_dir: Path | None = None):
+                 shots_dir: Path | None = None,
+                 on_change_cover_password: Callable[[QWidget], bool] | None = None):
         super().__init__(parent)
         self.setWindowTitle("설정")
         self.resize(460, 280)
@@ -501,6 +502,12 @@ class SettingsDialog(QDialog):
             pw.clicked.connect(lambda: on_change_password(self) and
                                QMessageBox.information(self, "비밀번호", "비밀번호를 바꿨습니다."))
             row.addWidget(pw)
+        if on_change_cover_password is not None:
+            cpw = QPushButton("검은 화면 비밀번호")
+            cpw.setToolTip("화면 가리기(검은 화면)를 풀 때 칠 비밀번호. 편집 화면 비밀번호와 따로 정합니다.")
+            cpw.clicked.connect(lambda: on_change_cover_password(self) and
+                                QMessageBox.information(self, "검은 화면 비밀번호", "검은 화면 비밀번호를 정했습니다."))
+            row.addWidget(cpw)
         if shots_dir is not None:
             shots = QPushButton("스크린샷 폴더 열기")
             shots.setToolTip(str(shots_dir))

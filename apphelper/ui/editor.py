@@ -428,9 +428,11 @@ class EditorWindow(QMainWindow):
                  on_power_now: Callable[[str], None] | None = None,
                  messenger_log_dir: Path | None = None,
                  autostart=None,
-                 on_cover: Callable[[], None] | None = None):
+                 on_cover: Callable[[], None] | None = None,
+                 on_change_cover_password: Callable[[QWidget], bool] | None = None):
         super().__init__()
         self._on_change_password = on_change_password
+        self._on_change_cover_password = on_change_cover_password
         self._on_trial_run = on_trial_run
         self.shots_dir = shots_dir
         self._moved: list[tuple[QWidget, QPoint]] = []
@@ -480,7 +482,9 @@ class EditorWindow(QMainWindow):
         if on_cover is not None:
             cover_btn = QPushButton("화면 가리기")
             cover_btn.setToolTip("편집 창을 트레이로 숨기고 화면을 검게 가립니다. 매크로·감시는 그대로 돌아갑니다.\n"
-                                 "검은 화면에서 비밀번호를 치면(Enter 없이) 풀립니다. 비밀번호는 영문·숫자·기호만.")
+                                 "검은 화면에서 키를 누르거나 클릭한 뒤 5초 안에 검은 화면 비밀번호를 치면(Enter 없이) 풀립니다.\n"
+                                 "5초 안에 못 치면 입력 비상종료: 열린 창을 모두 닫고 메신저를 끈 뒤 PC 를 잠급니다.\n"
+                                 "검은 화면 비밀번호는 설정에서 따로 정합니다.")
             cover_btn.clicked.connect(on_cover)
             bottom.addWidget(cover_btn)
         bottom.addWidget(settings_btn)
@@ -596,7 +600,8 @@ class EditorWindow(QMainWindow):
 
     def open_settings(self):
         dlg = SettingsDialog(self.data.settings, self._on_test_publish, self._wipe, self,
-                             on_change_password=self._on_change_password, shots_dir=self.shots_dir)
+                             on_change_password=self._on_change_password, shots_dir=self.shots_dir,
+                             on_change_cover_password=self._on_change_cover_password)
         if dlg.exec():
             self.data.settings = dlg.settings
             self.changed(refresh=False)

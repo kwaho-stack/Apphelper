@@ -65,7 +65,13 @@ def test_messenger_state_goes_into_results(tmp_path):
     assert data["messenger"]["current"] == "온라인"
     assert (tmp_path / "messenger" / "2026-11-24.txt").exists()
 
-    m.enabled = False  # 끄면 페이지에서도 빠진다
+    m.enabled = False  # 꺼도 마지막 상태는 그대로 보이고, 꺼짐 표시가 붙는다
+    svc.publish_now()
+    _, files = last_tree(gh)
+    data = json.loads(files["results.json"])
+    assert data["messenger"]["current"] == "온라인" and data["messenger"]["off"] is True
+
+    m.target = Point("", 0, 0)  # 좌표가 없으면 페이지에서 빠진다
     svc.publish_now()
     _, files = last_tree(gh)
     assert "messenger" not in json.loads(files["results.json"])

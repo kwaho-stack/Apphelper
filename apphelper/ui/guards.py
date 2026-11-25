@@ -34,8 +34,10 @@ def install_no_wheel(app: QApplication) -> NoWheelFilter:
 
 
 class _PasswordDialog(QDialog):
-    def __init__(self, title: str, message: str, confirm: bool, parent: QWidget | None = None):
+    def __init__(self, title: str, message: str, confirm: bool, parent: QWidget | None = None,
+                 check=None):
         super().__init__(parent)
+        self.check = check  # 비밀번호 → 문제 설명(쓸 수 없을 때) 또는 None
         self.setWindowTitle(title)
         self.setMinimumWidth(320)
         self.pw = QLineEdit()
@@ -66,6 +68,10 @@ class _PasswordDialog(QDialog):
             if self.pw.text() != self.pw2.text():
                 self.error.setText("두 비밀번호가 다릅니다.")
                 return
+            err = self.check(self.pw.text()) if self.check else None
+            if err:
+                self.error.setText(err)
+                return
         self.accept()
 
 
@@ -80,4 +86,17 @@ def ask_new_password(parent: QWidget | None = None, first: bool = True) -> str |
 def ask_password(parent: QWidget | None = None, retry: bool = False) -> str | None:
     msg = "비밀번호가 틀렸습니다. 다시 입력하세요." if retry else "편집 화면을 열려면 비밀번호를 입력하세요."
     dlg = _PasswordDialog("Apphelper 잠금", msg, False, parent)
+    return dlg.pw.text() if dlg.exec() else None
+
+
+def ask_new_cover_password(parent: QWidget | None = None, first: bool = True) -> str | None:
+    """검은 화면(화면 가리기) 해제용 비밀번호. 편집 화면 비밀번호와 따로 정한다."""
+    from ..cover.password import problem
+    msg = ("검은 화면을 풀 때 칠 비밀번호를 정하세요 (편집 화면 비밀번호와 별개).\n"
+           "영문·숫자·기호만 쓸 수 있습니다.\n"
+           "검은 화면에서 키를 누르거나 클릭한 뒤 5초 안에 이 비밀번호를 치지 않으면\n"
+           "열린 창을 모두 닫고 메신저를 끈 뒤 PC 를 잠급니다(입력 비상종료).")
+    if not first:
+        msg = "새 검은 화면 비밀번호를 입력하세요. 영문·숫자·기호만 쓸 수 있습니다."
+    dlg = _PasswordDialog("검은 화면 비밀번호", msg, True, parent, check=problem)
     return dlg.pw.text() if dlg.exec() else None

@@ -9,7 +9,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 QtWidgets = pytest.importorskip("PySide6.QtWidgets")
 
 from apphelper.cover import CoverController  # noqa: E402
-from apphelper.cover.keys import make_verifier  # noqa: E402
 
 
 def fake(code: int, delay: float = 0.2) -> CoverController:
@@ -32,6 +31,7 @@ def tray(app, tmp_path, monkeypatch):
     asked = []
     monkeypatch.setattr(appmod, "ask_password", lambda parent=None, retry=False: asked.append(1) or None)
     monkeypatch.setattr(appmod, "ask_new_password", lambda parent=None, first=True: None)  # 실제 창이 뜨지 않게
+    monkeypatch.setattr(appmod, "ask_new_cover_password", lambda parent=None, first=True: None)
     t = appmod.TrayApp(app)
     t.asked = asked
     yield t
@@ -55,7 +55,7 @@ def test_cover_hides_editor_and_unlock_stays_in_tray(tray, monkeypatch):
     from apphelper.cover import cursor
     restored = []
     monkeypatch.setattr(cursor, "restore", lambda: restored.append(1))
-    tray.verifier = make_verifier("abcd")
+    tray.cover_password.set("abcd")
     tray._skip_lock_once = True
     tray.open_editor()
     assert tray.editor.isVisible()
@@ -75,24 +75,44 @@ def test_cover_hides_editor_and_unlock_stays_in_tray(tray, monkeypatch):
 def test_unsupported_windows_shows_message_and_editor(tray, monkeypatch):
     msgs = []
     monkeypatch.setattr(QtWidgets.QMessageBox, "warning", staticmethod(lambda *a: msgs.append(a[2])))
-    tray.verifier = make_verifier("abcd")
+    tray.cover_password.set("abcd")
     tray.cover = fake(3, delay=0)
     tray.start_cover()
     assert wait_for(lambda: (tray._cover_tick(), bool(msgs))[1])
     assert "Windows 10 2004" in msgs[0] and tray.editor.isVisible()
 
 
-def test_untypable_password_refuses(tray, monkeypatch):
-    msgs = []
-    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", staticmethod(lambda *a: msgs.append(a[2])))
-    tray.verifier = make_verifier("한글비번")
+def test_cover_asks_for_its_own_password_first(tray, monkeypatch):
+    import apphelper.app as appmod
     tray.cover = fake(0)
+    tray.start_cover()                      # 검은 화면 비밀번호를 정하지 않으면(취소) 시작하지 않는다
+    assert not tray.cover.active and not tray.cover_password.is_set()
+    monkeypatch.setattr(appmod, "ask_new_cover_password", lambda parent=None, first=True: "Cover-99")
     tray.start_cover()
-    assert not tray.cover.active and "영문 자판" in msgs[0]
+    assert tray.cover.active and tray.cover_password.is_set()
+    from apphelper.cover.keys import check
+    assert check(tray.cover_password.verifier(), "Cover-99")
+    tray.lock.set("Edit-1234")              # 편집 화면 비밀번호와는 별개
+    assert not check(tray.cover_password.verifier(), "Edit-1234")
+
+
+def test_emergency_exit_is_recorded_for_the_page(tray, monkeypatch):
+    from apphelper.cover import EXIT_EMERGENCY
+    published = []
+    monkeypatch.setattr(tray.service, "request_publish", lambda: published.append(1))
+    tray.cover_password.set("abcd")
+    tray.cover = fake(EXIT_EMERGENCY, delay=0)
+    tray.start_cover()
+    assert wait_for(lambda: (tray._cover_tick(), tray.service.emergency_at is not None)[1])
+    assert published and not (tray.editor and tray.editor.isVisible())  # 트레이에만 있는다
+    assert tray.service.build_results() is not None
+    tray.cover = fake(0)
+    tray.start_cover()                      # 다음에 다시 가리면 지난 비상종료 표시는 지운다
+    assert tray.service.emergency_at is None
 
 
 def test_editor_has_cover_button(tray):
-    tray.verifier = make_verifier("abcd")
+    tray.cover_password.set("abcd")
     tray._skip_lock_once = True
     tray.open_editor()
     buttons = [b.text() for b in tray.editor.findChildren(QtWidgets.QPushButton)]

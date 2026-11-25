@@ -30,6 +30,9 @@
   h2 { font-size: 16px; margin: 28px 0 8px; }
   .updated { color: var(--muted); font-size: 13px; margin: 0 0 8px; font-variant-numeric: tabular-nums; }
   .updated.stale { color: var(--fail); }
+  .updated .emergency { display: block; color: var(--fail); font-weight: 700; }
+  .paused { margin-top: 8px; padding: 6px 10px; border-radius: 8px; font-size: 13px;
+            background: rgba(217, 119, 6, .14); color: #b45309; font-weight: 600; }
   .days { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 12px; }
   .days button { flex: none; border: 1px solid var(--line); background: var(--card); color: var(--text);
                  border-radius: 8px; padding: 6px 10px; cursor: pointer; font: inherit; font-size: 13px; }
@@ -129,11 +132,12 @@
 
     <!-- 메신저 상태 (기존 mess) -->
     <section data-panel="messenger">
-      <div class="card empty" id="msgOff" hidden>메신저 상태 감시가 꺼져 있습니다. PC 앱의 '메신저 상태' 탭에서 켜세요.</div>
+      <div class="card empty" id="msgOff" hidden>메신저 상태 감시가 설정되지 않았습니다. PC 앱의 '메신저 상태' 탭에서 좌표를 정하고 켜세요.</div>
       <div id="msgOn" hidden>
         <div class="card pad" style="margin-top:10px">
           <div class="big" id="msgCurrent"></div>
           <div class="sub" id="msgSince"></div>
+          <div class="paused" id="msgPaused" hidden>⏸ 감시 꺼짐 — PC 앱에서 메신저 상태 감시가 꺼져 있어, 위 상태는 꺼지기 전 마지막 기록입니다.</div>
         </div>
         <div class="card pad" id="othersCard" style="margin-top:10px" hidden>
           <div style="font-weight:600">다른 사람 현황</div>
@@ -251,6 +255,7 @@
     e.className = "updated";
     if (!t) {
       e.textContent = loaded ? "마지막 갱신 시각 정보 없음" : "불러오는 중…";
+      if (data.emergency) e.insertBefore(el("span", "emergency", "⚠ 입력 비상종료 " + data.emergency), e.firstChild);
       return;
     }
     var minutes = Math.max(0, Math.floor((Date.now() - t.getTime()) / 60000));
@@ -261,6 +266,8 @@
       text += " · 1시간 넘게 갱신이 없습니다. 앱이 꺼져 있거나 PC 가 절전 중일 수 있어요";
     }
     e.textContent = text;
+    // 검은 화면에서 비밀번호 없이 입력이 들어와 비상종료했으면 그 시각을 맨 위에 표시
+    if (data.emergency) e.insertBefore(el("span", "emergency", "⚠ 입력 비상종료 " + data.emergency), e.firstChild);
   }
 
   // ------------------------------------------------------------------ 메신저 상태
@@ -294,6 +301,8 @@
     cur.appendChild(el("span", "", m.current));
     if (m.name) cur.appendChild(el("span", "who", m.name));
     $("msgSince").textContent = m.since ? m.since + " 부터 · " + elapsed(m.since) : "";
+    // 감시가 꺼져 있어도 마지막으로 기록된 상태를 그대로 보여 주고, 꺼져 있다는 표시를 붙인다
+    $("msgPaused").hidden = !m.off;
 
     var others = m.others || [];
     $("othersCard").hidden = !others.length;
@@ -559,9 +568,12 @@
     $("powerMsg").className = "status" + (err ? " err" : "");
   }
 
+  // PC 와 이 기기의 시계가 다를 수 있어서, PC 시각 비교와 함께 '상태가 새로 올라온 걸 이 기기에서 본 시각'도 쓴다
+  var statusSeen = { v: null, at: 0 };
   function pcOnline() {
-    return pcStatus && pcStatus.online && pcStatus.remote_power !== false &&
-           Date.now() - (pcStatus.updated_at || 0) < ONLINE_WINDOW_MS;
+    if (!(pcStatus && pcStatus.online && pcStatus.remote_power !== false)) return false;
+    return Date.now() - (pcStatus.updated_at || 0) < ONLINE_WINDOW_MS ||
+           Date.now() - statusSeen.at < ONLINE_WINDOW_MS;
   }
 
   function fmtTime(ms) {
@@ -606,6 +618,10 @@
     readEncrypted("apphelper-status", "status.bin")
       .then(function (s) {
         if (s === null) { var nf = new Error("not found"); nf.status = 404; throw nf; }
+        if (s.updated_at !== statusSeen.v) {
+          if (statusSeen.v !== null) statusSeen.at = Date.now();  // 지켜보는 동안 바뀌었다 = 지금 켜져 있다
+          statusSeen.v = s.updated_at;
+        }
         pcStatus = s;
         pcStatusError = null;
         if (pendingPower && s.last_command_id === pendingPower.id) {

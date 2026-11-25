@@ -4,13 +4,16 @@
 - SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE): 사람 눈에는 검은 화면, 화면 캡처(색 비교·이미지 찾기·
   메신저 감시·스크린샷)에는 원래 화면이 보인다 (Windows 10 2004 이상)
 - 저수준 키보드·마우스 후크: 사람이 친 입력(주입 표시 없음)은 버리고, 프로그램이 보낸 입력은 통과
-- 버린 키 입력 중 비밀번호가 완성되면 해제 → 'UNLOCKED' 출력 후 종료
+- 사람이 키를 누르거나 클릭하면 5초 시계가 시작되고, 그 안에 버린 키 입력으로 비밀번호가 완성되면 해제
+  → 'UNLOCKED' 출력 후 종료. 5초 안에 못 치면 입력 비상종료(emergency.py: 창 닫기 → 메신저 끄기 → PC 잠금)
+  뒤 검은 화면을 없애고 종료
 - 가리는 동안 절전·화면 꺼짐을 막는다 (매크로가 돌아야 하므로)
 - 가리는 동안 마우스 커서를 숨긴다 (cursor.py)
 
 앱과의 약속:
   표준 입력 첫 줄: {"salt": ..., "hash": ...} (세션용 비밀번호 검증값). 이후 'STOP' → 해제 없이 끝냄(테스트용)
-  종료 코드: 0 비밀번호로 해제 / 10 STOP / 2 검증값 없음 / 3 지원 안 되는 Windows / 4 입력 차단 실패 / 5 창 실패
+  종료 코드: 0 비밀번호로 해제 / 20 입력 비상종료 / 10 STOP / 2 검증값 없음 / 3 지원 안 되는 Windows /
+            4 입력 차단 실패 / 5 창 실패
   (창 없는 exe 는 표준 출력이 없을 수 있어 결과는 종료 코드로 알린다. 표준 출력이 있으면 READY 등도 쓴다)
 이 프로세스가 비정상 종료되면 Windows 가 후크를 자동으로 풀어 입력은 다시 된다.
 """
@@ -23,11 +26,15 @@ import threading
 from ctypes import wintypes
 
 from . import cursor
-from .keys import Unlocker
+from .keys import ARM_SECONDS, Gate
 
 WH_KEYBOARD_LL, WH_MOUSE_LL = 13, 14
 WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP = 0x100, 0x101, 0x104, 0x105
 WM_DESTROY, WM_CLOSE, WM_TIMER = 0x02, 0x10, 0x113
+WM_USER = 0x400
+WM_ARM = WM_USER + 1          # 후크 → 창: 5초 타이머 시작
+WM_EMERGENCY_DONE = WM_USER + 2
+CLICK_MESSAGES = {0x201, 0x204, 0x207, 0x20B}  # 왼쪽·오른쪽·가운데·X 버튼 누름 (이동·휠은 아님)
 LLKHF_INJECTED, LLMHF_INJECTED = 0x10, 0x01
 WS_POPUP = 0x80000000
 WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_EX_TOOLWINDOW = 0x08, 0x20, 0x80
@@ -41,7 +48,7 @@ SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN = 7
 ES_CONTINUOUS, ES_SYSTEM_REQUIRED, ES_DISPLAY_REQUIRED = 0x80000000, 0x1, 0x2
 VK_CAPITAL = 0x14
 BLACK_BRUSH = 4
-TOPMOST_TIMER = 1
+TOPMOST_TIMER, ARM_TIMER = 1, 2
 
 LRESULT = ctypes.c_ssize_t
 _FUNCTYPE = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)  # Windows 가 아니어도 불러올 수는 있게
@@ -88,6 +95,7 @@ def _api():
                                     ctypes.c_int, wintypes.UINT]
     user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
     user32.SetTimer.argtypes = [wintypes.HWND, ctypes.c_size_t, wintypes.UINT, ctypes.c_void_p]
+    user32.KillTimer.argtypes = [wintypes.HWND, ctypes.c_size_t]
     user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     user32.DestroyWindow.argtypes = [wintypes.HWND]
     user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
@@ -104,6 +112,7 @@ def _api():
 
 
 EXIT_UNLOCKED, EXIT_STOPPED, EXIT_BAD_INPUT, EXIT_UNSUPPORTED, EXIT_HOOK, EXIT_WINDOW = 0, 10, 2, 3, 4, 5
+EXIT_EMERGENCY = 20
 
 
 def say(msg: str) -> None:
@@ -124,12 +133,29 @@ def run(verifier: dict) -> int:
         user32.SetProcessDPIAware()
 
     hinst = kernel32.GetModuleHandleW(None)
-    state = {"hwnd": None, "unlocked": False}
-    unlocker = Unlocker(verifier, caps=bool(user32.GetKeyState(VK_CAPITAL) & 1))
+    state = {"hwnd": None}
+    gate = Gate(verifier, caps=bool(user32.GetKeyState(VK_CAPITAL) & 1))
+
+    def emergency_worker(hwnd):
+        from . import emergency
+        emergency.run()
+        user32.PostMessageW(hwnd, WM_EMERGENCY_DONE, 0, 0)
 
     def wndproc(hwnd, msg, wparam, lparam):
+        if msg == WM_TIMER and wparam == ARM_TIMER:  # 첫 입력 뒤 5초 안에 비밀번호를 못 침
+            user32.KillTimer(hwnd, ARM_TIMER)
+            if gate.expire():
+                # 오래 걸리는 일은 다른 스레드에서 (이 스레드가 막히면 입력 후크가 풀릴 수 있다)
+                threading.Thread(target=emergency_worker, args=(hwnd,), daemon=True).start()
+            return 0
         if msg == WM_TIMER:  # 다른 '항상 위' 창이 올라와도 다시 맨 위로
             user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+            return 0
+        if msg == WM_ARM:
+            user32.SetTimer(hwnd, ARM_TIMER, ARM_SECONDS * 1000, None)
+            return 0
+        if msg == WM_EMERGENCY_DONE:  # 창 닫기·메신저 끄기·잠금까지 끝났으면 검은 화면을 없앤다
+            user32.DestroyWindow(hwnd)
             return 0
         if msg == WM_CLOSE:
             user32.DestroyWindow(hwnd)
@@ -139,16 +165,22 @@ def run(verifier: dict) -> int:
             return 0
         return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
+    def act(actions):
+        for a in actions:
+            if a == "arm":
+                user32.PostMessageW(state["hwnd"], WM_ARM, 0, 0)
+            elif a == "unlock":
+                user32.KillTimer(state["hwnd"], ARM_TIMER)
+                user32.PostMessageW(state["hwnd"], WM_CLOSE, 0, 0)
+
     def kb_hook(code, wparam, lparam):
         if code >= 0:
             ks = ctypes.cast(lparam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
             if ks.flags & LLKHF_INJECTED:
                 return user32.CallNextHookEx(None, code, wparam, lparam)  # 프로그램이 보낸 입력은 통과
             down = wparam in (WM_KEYDOWN, WM_SYSKEYDOWN)
-            if wparam in (WM_KEYDOWN, WM_SYSKEYDOWN, WM_KEYUP, WM_SYSKEYUP) and not state["unlocked"]:
-                if unlocker.feed(ks.vkCode, down):
-                    state["unlocked"] = True
-                    user32.PostMessageW(state["hwnd"], WM_CLOSE, 0, 0)
+            if wparam in (WM_KEYDOWN, WM_SYSKEYDOWN, WM_KEYUP, WM_SYSKEYUP):
+                act(gate.key(ks.vkCode, down))
             return 1  # 사람이 친 키는 어디에도 전달하지 않는다
         return user32.CallNextHookEx(None, code, wparam, lparam)
 
@@ -156,6 +188,8 @@ def run(verifier: dict) -> int:
         if code >= 0:
             ms = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
             if not ms.flags & LLMHF_INJECTED:
+                if wparam in CLICK_MESSAGES:  # 클릭만 5초 시계를 시작한다 (이동·휠은 무시)
+                    act(gate.click())
                 return 1  # 사람의 마우스 이동·클릭·휠은 버린다
         return user32.CallNextHookEx(None, code, wparam, lparam)
 
@@ -215,9 +249,12 @@ def run(verifier: dict) -> int:
         user32.UnhookWindowsHookEx(mouse)
         cursor.restore()
         kernel32.SetThreadExecutionState(ES_CONTINUOUS)
-    if state["unlocked"]:
+    if gate.done == "unlock":
         say("UNLOCKED")
         return EXIT_UNLOCKED
+    if gate.done == "emergency":
+        say("EMERGENCY")
+        return EXIT_EMERGENCY
     return EXIT_STOPPED
 
 

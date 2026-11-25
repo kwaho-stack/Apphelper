@@ -53,7 +53,10 @@ class Service:
         # PC 종료/다시시작 예약 (GUI 와 원격이 함께 쓴다)
         self.power = PowerScheduler(clock=clock)
         self.remote_state_path = remote_state_path
-        self._last_power_id = self._load_remote_state().get("last_power_id")
+        state = self._load_remote_state()
+        self._last_power_id = state.get("last_power_id")
+        # 화면 가리기 입력 비상종료 시각 ("YYYY-MM-DD HH:MM:SS"). 다음 가리기를 시작할 때 지운다.
+        self.emergency_at: str | None = state.get("emergency_at")
         self._status_version = -1
         self._status_sent_at = 0.0
         self._last_publish = -1e9
@@ -215,6 +218,8 @@ class Service:
             results = self.build_results()
             settings = settings or self.data.settings
             results["repo"] = f"{settings.github_owner}/{settings.github_repo}"
+            if self.emergency_at:
+                results["emergency"] = self.emergency_at
             messenger = self.messenger_web_data()
             if messenger is not None:
                 results["messenger"] = messenger
@@ -265,11 +270,32 @@ class Service:
         return monitor.snapshot() if monitor else []
 
     def messenger_web_data(self) -> dict | None:
-        monitor = self._ensure_monitor()
-        if monitor is None:
+        """페이지용 메신저 데이터. 감시가 꺼져 있어도 좌표가 있으면 기록에 남은 마지막 상태를 보여 주고 off 로 표시."""
+        cfg = self.data.messenger
+        if self.messenger_log is None or not cfg.ready:
             return None
+        monitor = self._ensure_monitor()
+        if monitor is None:  # 감시 꺼짐: 기록 파일만 읽어 마지막 상태를 만든다
+            data = MessengerMonitor(cfg, self.messenger_log, self.now()).web_data(self.now())
+            data["off"] = True
+            return data
         with self._monitor_lock:
             return monitor.web_data(self.now())
+
+    # ------------------------------------------------------------ 화면 가리기 비상종료
+    def record_emergency(self, when: datetime | None = None) -> None:
+        """검은 화면에서 비밀번호 없이 입력이 들어와 비상종료했음을 남기고 페이지에 바로 알린다."""
+        self.emergency_at = f"{when or self.now():%Y-%m-%d %H:%M:%S}"
+        self._save_remote_state()
+        self._last_publish = -1e9  # 최소 간격을 기다리지 않고 바로 올린다
+        self.request_publish()
+
+    def clear_emergency(self) -> None:
+        if self.emergency_at is None:
+            return
+        self.emergency_at = None
+        self._save_remote_state()
+        self.request_publish()
 
     # ------------------------------------------------------------ 원격 요청 (스크린샷·전원)
     def _load_remote_state(self) -> dict:
@@ -284,7 +310,8 @@ class Service:
             return
         try:
             self.remote_state_path.parent.mkdir(parents=True, exist_ok=True)
-            self.remote_state_path.write_text(json.dumps({"last_power_id": self._last_power_id}),
+            self.remote_state_path.write_text(json.dumps({"last_power_id": self._last_power_id,
+                                                          "emergency_at": self.emergency_at}),
                                               encoding="utf-8")
         except OSError as e:
             log.debug("원격 상태 저장 실패: %s", e)

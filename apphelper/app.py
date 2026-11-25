@@ -14,7 +14,7 @@ from .core.model import AppData, Settings, Store
 from .service import Service, load_page_template
 from .core.lock import PasswordLock
 from .ui.editor import EditorWindow
-from .ui.guards import ask_new_password, ask_password, install_no_wheel
+from .ui.guards import ask_new_cover_password, ask_new_password, ask_password, install_no_wheel
 
 INSTANCE_NAME = "apphelper-single-instance"
 log = logging.getLogger("apphelper")
@@ -74,10 +74,11 @@ class TrayApp:
                                remote_state_path=self.store.data_dir / "remote_state.json")
         self.editor: EditorWindow | None = None
         self.warning = None
-        # 화면 가리기: 비밀번호 확인용 세션 검증값(메모리에만), 가리기 프로세스 제어
+        # 화면 가리기: 전용 비밀번호(data/cover.json 에 검증값만), 가리기 프로세스 제어
         from .cover import CoverController
+        from .cover.password import CoverPassword
         self.cover = CoverController()
-        self.verifier: dict | None = None
+        self.cover_password = CoverPassword(self.store.data_dir)
         self._skip_lock_once = False
 
         self.tray = QSystemTrayIcon(make_icon(self.service.paused))
@@ -227,13 +228,11 @@ class TrayApp:
     # ------------------------------------------------------------ 편집 화면
     def _unlock(self) -> bool:
         """편집 화면을 열기 전 비밀번호 확인. 처음이면 비밀번호를 정하게 한다."""
-        from .cover.keys import make_verifier
         if not self.lock.is_set():
             pw = ask_new_password(first=True)
             if pw is None:
                 return False
             self.lock.set(pw)
-            self.verifier = make_verifier(pw)
             return True
         retry = False
         for _ in range(3):
@@ -241,43 +240,50 @@ class TrayApp:
             if pw is None:
                 return False
             if self.lock.verify(pw):
-                self.verifier = make_verifier(pw)  # 화면 가리기 해제용 (파일에 남기지 않음)
                 return True
             retry = True
         return False
 
     def change_password(self, parent=None) -> bool:
-        from .cover.keys import make_verifier
         pw = ask_new_password(parent, first=False)
         if pw is None:
             return False
         self.lock.set(pw)
-        self.verifier = make_verifier(pw)
+        return True
+
+    def change_cover_password(self, parent=None) -> bool:
+        """검은 화면 전용 비밀번호를 정하거나 바꾼다."""
+        pw = ask_new_cover_password(parent, first=not self.cover_password.is_set())
+        if pw is None:
+            return False
+        self.cover_password.set(pw)
         return True
 
     # ------------------------------------------------------------ 화면 가리기
     def start_cover(self) -> None:
-        """편집 창을 트레이로 숨기고 화면을 검게 가린다. 비밀번호를 치면 풀린다."""
+        """편집 창을 트레이로 숨기고 화면을 검게 가린다.
+
+        키를 누르거나 클릭한 뒤 5초 안에 검은 화면 비밀번호를 치면 풀리고, 못 치면 입력 비상종료
+        (창 닫기 → 메신저 끄기 → PC 잠금 → 가리기 해제). 비상종료는 결과 페이지에 시각과 함께 표시한다.
+        """
         if self.cover.active:
             return
-        if self.verifier is None and not self._unlock():  # 보통은 편집 화면을 열 때 이미 만들어져 있다
-            return
-        if not self.verifier.get("typable", True):
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(self.editor, "화면 가리기",
-                                "비밀번호에 한글 등 영문 자판으로 칠 수 없는 글자가 있어 화면 가리기를 풀 수 없습니다.\n"
-                                "설정 → 비밀번호 변경에서 영문·숫자·기호로 바꾼 뒤 다시 시도해 주세요.")
-            return
+        verifier = self.cover_password.verifier()
+        if verifier is None:  # 처음이면 검은 화면 비밀번호부터 정한다
+            if not self.change_cover_password(self.editor):
+                return
+            verifier = self.cover_password.verifier()
         if self.editor:
             self.editor.flush()
             self.editor.close()
+        self.service.clear_emergency()  # 새로 가리면 지난 비상종료 표시는 지운다
         try:
-            self.cover.start(self.verifier)
+            self.cover.start(verifier)
         except OSError as e:
             self._cover_failed(f"화면 가리기를 시작하지 못했습니다: {e}")
 
     def _cover_tick(self) -> None:
-        from .cover import EXIT_STOPPED, EXIT_UNLOCKED, EXIT_UNSUPPORTED
+        from .cover import EXIT_EMERGENCY, EXIT_STOPPED, EXIT_UNLOCKED, EXIT_UNSUPPORTED
         code = self.cover.poll()
         if code is None:
             return
@@ -285,6 +291,9 @@ class TrayApp:
         cursor.restore()  # 가리기 프로세스가 강제 종료돼 커서를 못 되돌렸을 수도 있으니 앱도 한 번 더
         if code in (EXIT_UNLOCKED, EXIT_STOPPED):
             return  # 풀린 뒤에는 트레이에만 있는다 (편집 화면은 평소처럼 트레이에서 비밀번호로 연다)
+        if code == EXIT_EMERGENCY:
+            self.service.record_emergency()  # 창 닫기·메신저 끄기·잠금은 가리기 프로세스가 이미 했다
+            return
         if code == EXIT_UNSUPPORTED:
             self._cover_failed("이 Windows 버전에서는 화면 가리기를 쓸 수 없습니다 (Windows 10 2004 이상 필요).")
         else:
@@ -309,7 +318,8 @@ class TrayApp:
                                        on_trial_run=self.service.trial_run, shots_dir=self.shots_dir,
                                        power=self.service.power, on_power_now=self.power_now,
                                        messenger_log_dir=self.messenger_log_dir,
-                                       autostart=self._autostart(), on_cover=self.start_cover)
+                                       autostart=self._autostart(), on_cover=self.start_cover,
+                                       on_change_cover_password=self.change_cover_password)
         self.editor.show()
         self.editor.setWindowState(self.editor.windowState() & ~Qt.WindowState.WindowMinimized)
         self.editor.raise_()
