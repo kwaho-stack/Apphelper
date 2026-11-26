@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
@@ -63,6 +63,11 @@ def make_icon(paused: bool) -> QIcon:
     return QIcon(pix)
 
 
+class _Bridge(QObject):
+    """서비스(다른 스레드) → 화면 스레드로 일을 넘기는 신호."""
+    macro_ops = Signal(object)
+
+
 class TrayApp:
     def __init__(self, app: QApplication):
         self.app = app
@@ -82,6 +87,10 @@ class TrayApp:
                                remote_state_path=self.store.data_dir / "remote_state.json",
                                window_grabber=_window_grabber())
         self.editor: EditorWindow | None = None
+        # 페이지의 매크로 조정 명령은 서비스 스레드에서 오므로 신호로 화면 스레드에 넘겨 적용한다
+        self._bridge = _Bridge()
+        self._bridge.macro_ops.connect(self.apply_macro_ops)
+        self.service.on_macro_ops = self._bridge.macro_ops.emit
         self.warning = None
         # 화면 가리기: 전용 비밀번호(data/cover.json 에 검증값만), 가리기 프로세스 제어
         from .cover import CoverController
@@ -224,6 +233,65 @@ class TrayApp:
             self.editor.set_last_run(status)
             self.editor.set_live(self.service.messenger_snapshot())
 
+    def set_running(self, running: bool) -> None:
+        if running == (not self.service.paused):
+            return
+        self.toggle_running()
+
+    def apply_macro_ops(self, ops: list) -> None:
+        """결과 페이지에서 온 매크로 조정: 켜기/끄기, 프로필 바꾸기, 시간대 사용·분 범위."""
+        data = self.editor.data if self.editor else self.data.clone()
+        changed, running = False, None
+        for op in ops:
+            kind = op.get("op")
+            try:
+                if kind == "running":
+                    running = bool(op.get("value"))
+                elif kind == "profile":
+                    name = str(op.get("name", ""))
+                    if name in data.profile_names() and name != data.profile:
+                        data.switch_profile(name)
+                        changed = True
+                elif kind == "slot":
+                    if op.get("profile") not in (None, data.profile):
+                        continue  # 페이지가 보던 것과 다른 프로필이면 건드리지 않는다
+                    slot = data.slots[int(op["hour"])]
+                    if "on" in op:
+                        slot.enabled = bool(op["on"])
+                    if "s" in op:
+                        slot.minute_start = max(0, min(59, int(op["s"])))
+                    if "e" in op:
+                        slot.minute_end = max(0, min(59, int(op["e"])))
+                    changed = True
+            except (KeyError, IndexError, TypeError, ValueError) as e:
+                log.debug("잘못된 매크로 명령 %s: %s", op, e)
+        if changed:
+            if self.editor:
+                self.editor._rebind()
+                self.editor.changed(refresh=False)
+                self.editor.flush()
+            else:
+                self._on_editor_save(data)
+        if running is not None:
+            self.set_running(running)
+        self.service.macro_applied([str(op.get("id")) for op in ops])
+
+    def run_logins(self, targets: list) -> str:
+        """자동 로그인 (작업 스레드에서 불림). 매크로 클릭과 겹치지 않게 실행 잠금을 잡는다."""
+        if sys.platform != "win32":
+            return "자동 로그인은 Windows 에서만 됩니다."
+        from .autologin_win import WinLoginOps
+        from .core.autologin import run_login
+        ops = WinLoginOps(self.backend)
+        lines = []
+        with self.service._run_lock:
+            for t in targets:
+                try:
+                    lines.append(run_login(t, ops).line())
+                except Exception as e:  # noqa: BLE001 - 한 항목이 실패해도 다음 항목은 한다
+                    lines.append(f"❌ {t.name}: 오류 {e}")
+        return "\n".join(lines)
+
     def toggle_running(self):
         if self.editor:
             self.editor.flush()
@@ -233,6 +301,8 @@ class TrayApp:
             self.editor.data.settings.running = self.data.settings.running
         self._save(self.data)
         self._update_tray()
+        if self.editor:
+            self.editor.set_running(self.data.settings.running)
 
     # ------------------------------------------------------------ 편집 화면
     def _unlock(self) -> bool:
@@ -328,7 +398,9 @@ class TrayApp:
                                        power=self.service.power, on_power_now=self.power_now,
                                        messenger_log_dir=self.messenger_log_dir,
                                        autostart=self._autostart(), on_cover=self.start_cover,
-                                       on_change_cover_password=self.change_cover_password)
+                                       on_change_cover_password=self.change_cover_password,
+                                       on_toggle_running=self.toggle_running,
+                                       on_login=self.run_logins)
         self.editor.show()
         self.editor.setWindowState(self.editor.windowState() & ~Qt.WindowState.WindowMinimized)
         self.editor.raise_()

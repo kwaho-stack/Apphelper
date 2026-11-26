@@ -166,3 +166,39 @@ def grab_messenger(ref: WindowRef):
         return img, (x, y)
     except OSError as e:
         return str(e)
+
+
+def list_windows() -> list[dict]:
+    """보이는 맨 바깥 창 목록: hwnd, exe, cls, title, x, y, w, h, iconic."""
+    a = api()
+    a.user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    a.user32.GetWindow.restype = wintypes.HWND
+    a.user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+    out = []
+    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def visit(hwnd, _):
+        if a.user32.IsWindowVisible(hwnd) and not a.user32.GetWindow(hwnd, 4):  # GW_OWNER: 대화상자 제외
+            exe, cls, rect = _info(hwnd)
+            title = ctypes.create_unicode_buffer(512)
+            a.user32.GetWindowTextW(hwnd, title, 512)
+            out.append({"hwnd": hwnd, "exe": exe, "cls": cls, "title": title.value, "x": rect.left, "y": rect.top,
+                        "w": rect.right - rect.left, "h": rect.bottom - rect.top,
+                        "iconic": bool(a.user32.IsIconic(hwnd))})
+        return True
+
+    a.user32.EnumWindows(enum_proc(visit), 0)
+    return out
+
+
+def window_info_at(x: int, y: int) -> dict | None:
+    """화면 (x, y) 에 있는 맨 바깥 창의 정보 (list_windows 와 같은 형식)."""
+    a = api()
+    hwnd = a.user32.WindowFromPoint(wintypes.POINT(int(x), int(y)))
+    if not hwnd:
+        return None
+    root = a.user32.GetAncestor(hwnd, GA_ROOT) or hwnd
+    for w in list_windows():
+        if w["hwnd"] == root:
+            return w
+    return None

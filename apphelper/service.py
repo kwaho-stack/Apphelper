@@ -58,6 +58,11 @@ class Service:
         self.remote_state_path = remote_state_path
         state = self._load_remote_state()
         self._last_power_id = state.get("last_power_id")
+        # 페이지의 매크로 조정 명령: 처리한 id (다시 켜도 같은 명령을 또 하지 않게), 앱에 넘길 콜백(다른 스레드에서 불림)
+        self._done_macro: list[str] = [str(i) for i in state.get("done_macro_ids") or []]
+        self.on_macro_ops: Callable[[list[dict]], None] | None = None
+        self._macro_acked: list[str] = []  # 실제로 적용까지 끝난 명령 id (페이지가 '반영됨'을 확인)
+        self._macro_rev = 0  # 매크로 상태(켜짐·프로필·시간대)가 바뀔 때마다 +1 → PC 상태를 바로 다시 올린다
         # 화면 가리기 입력 비상종료 시각 ("YYYY-MM-DD HH:MM:SS"). 다음 가리기를 시작할 때 지운다.
         self.emergency_at: str | None = state.get("emergency_at")
         self._status_version = -1
@@ -111,10 +116,12 @@ class Service:
     def set_paused(self, paused: bool) -> None:
         self.data.settings.running = not paused
         self.scheduler.set_paused(paused)
+        self._macro_rev += 1
 
     def update_data(self, data: AppData) -> None:
         self.data = data.clone()
         self.scheduler.update_data(self.data)
+        self._macro_rev += 1
         self.request_publish()
 
     # ------------------------------------------------------------ 스케줄 콜백
@@ -324,6 +331,7 @@ class Service:
         try:
             self.remote_state_path.parent.mkdir(parents=True, exist_ok=True)
             self.remote_state_path.write_text(json.dumps({"last_power_id": self._last_power_id,
+                                                          "done_macro_ids": self._done_macro,
                                                           "emergency_at": self.emergency_at}),
                                               encoding="utf-8")
         except OSError as e:
@@ -331,7 +339,8 @@ class Service:
 
     def _remote_enabled(self) -> bool:
         s = self.data.settings
-        return s.github_ready and (s.remote_power or (s.remote_screenshot and self.capture_image is not None))
+        return s.github_ready and (s.remote_power or s.remote_macro
+                                   or (s.remote_screenshot and self.capture_image is not None))
 
     def _remote_loop(self) -> None:
         while not self._stop.is_set():
@@ -355,6 +364,7 @@ class Service:
             return False
         raw = publisher.fetch_remote_request() or {}
         self._handle_power(raw.get("power"))
+        self._handle_macro(raw.get("macro"))
         return self._handle_screenshot(raw, now_utc)
 
     def _handle_power(self, cmd) -> None:
@@ -368,6 +378,39 @@ class Service:
             log.debug("원격 전원 명령: %s", parsed)
             self.power.apply_remote(parsed)
         self._status_version = -1  # 받았다는 걸 바로 알린다
+
+    MACRO_OP_MAX_AGE_MS = 10 * 60 * 1000  # 이보다 오래된 명령은 무시 (앱을 늦게 켰을 때 엉뚱하게 바꾸지 않게)
+
+    def _handle_macro(self, ops) -> None:
+        """페이지가 쌓아 둔 매크로 조정 명령 목록 중 새것을 앱에 넘긴다 (실제 적용은 앱의 화면 스레드에서)."""
+        if not self.data.settings.remote_macro or not isinstance(ops, list):
+            return
+        new = [op for op in ops if isinstance(op, dict) and op.get("id") and str(op["id"]) not in self._done_macro]
+        if not new:
+            return
+        now_ms = self.clock() * 1000
+        fresh = [op for op in new if now_ms - float(op.get("at") or 0) <= self.MACRO_OP_MAX_AGE_MS]
+        self._done_macro = (self._done_macro + [str(op["id"]) for op in new])[-100:]
+        self._save_remote_state()
+        stale = [str(op["id"]) for op in new if op not in fresh]
+        if fresh and self.on_macro_ops is not None:
+            log.debug("원격 매크로 조정 %d건", len(fresh))
+            self.on_macro_ops(fresh)  # 앱이 적용한 뒤 macro_applied() 를 부른다
+        else:
+            stale += [str(op["id"]) for op in fresh]
+        if stale:
+            self.macro_applied(stale)
+
+    def macro_applied(self, ids: list[str]) -> None:
+        """명령을 적용했다(또는 너무 오래돼 버렸다) → 다음 PC 상태에 '반영됨'으로 싣는다."""
+        self._macro_acked = (self._macro_acked + [str(i) for i in ids])[-30:]
+        self._macro_rev += 1
+
+    def macro_state(self) -> dict:
+        """페이지의 매크로 조정 화면에 보여 줄 지금 상태."""
+        d = self.data
+        return {"running": not self.paused, "profile": d.profile, "profiles": d.profile_names(),
+                "slots": [[s.enabled, s.minute_start, s.minute_end] for s in d.slots]}
 
     def _handle_screenshot(self, raw: dict, now_utc: datetime | None) -> bool:
         from .core.remote import derive_key, encrypt, parse_request
@@ -398,18 +441,21 @@ class Service:
             "scheduled_mode": st["mode"] if at else None,
             "last_command_id": self._last_power_id,
             "remote_power": self.data.settings.remote_power,
+            "remote_macro": self.data.settings.remote_macro,
+            "macro": self.macro_state() if self.data.settings.remote_macro else None,
+            "macro_done": self._macro_acked if self.data.settings.remote_macro else [],
         }
 
     def send_status(self, force: bool = False, online: bool = True) -> bool:
         """PC 상태(켜짐·예약)를 apphelper-status 브랜치에 올린다. 바뀌었거나 60초가 지났을 때만."""
         from .core.remote import STATUS_BIN, STATUS_BRANCH, encrypt_json
-        if not self.data.settings.remote_power:
+        if not (self.data.settings.remote_power or self.data.settings.remote_macro):
             return False
         publisher = self._publisher()
         if publisher is None:
             return False
         now = self.clock()
-        version = self.power.version
+        version = (self.power.version, self._macro_rev)
         if not force and version == self._status_version and now - self._status_sent_at < self.HEARTBEAT_SECONDS:
             return False
         publisher.write_branch(STATUS_BRANCH, {},
@@ -419,7 +465,8 @@ class Service:
 
     def go_offline(self, timeout: float = 6) -> None:
         """앱 종료·PC 종료 직전에 '꺼짐'으로 알린다 (최선 노력, timeout 초 안에)."""
-        if not (self.data.settings.remote_power and self.data.settings.github_ready):
+        s = self.data.settings
+        if not ((s.remote_power or s.remote_macro) and s.github_ready):
             return
         t = threading.Thread(target=lambda: self._try(lambda: self.send_status(force=True, online=False)),
                              daemon=True)

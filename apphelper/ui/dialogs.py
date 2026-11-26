@@ -489,6 +489,11 @@ class SettingsDialog(QDialog):
         form.addRow("", self.debug)
         form.addRow("", self.remote)
         form.addRow("", self.remote_power)
+        self.remote_macro = QCheckBox("결과 페이지에서 매크로 조정 허용 (켜기/끄기·프로필·시간대·분 범위)")
+        self.remote_macro.setChecked(settings.remote_macro)
+        self.remote_macro.setToolTip("켜면 5초마다 페이지의 명령을 확인하고, 매크로 상태를 페이지에 알립니다.\n"
+                                     "같은 토큰을 넣은 브라우저에서만 조정할 수 있습니다.")
+        form.addRow("", self.remote_macro)
 
         test = self.test_btn = QPushButton("결과 페이지 지금 갱신")
         test.clicked.connect(self._test)
@@ -534,6 +539,7 @@ class SettingsDialog(QDialog):
         s.debug_log = self.debug.isChecked()
         s.remote_screenshot = self.remote.isChecked()
         s.remote_power = self.remote_power.isChecked()
+        s.remote_macro = self.remote_macro.isChecked()
         return s
 
     def _test(self) -> None:

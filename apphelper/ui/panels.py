@@ -635,3 +635,343 @@ class PowerWarning(QWidget):
     def _cancel(self):
         self.power.cancel()
         self.close()
+
+
+# ------------------------------------------------------------------ 자동 로그인
+
+def window_info_at(x: int, y: int):
+    """화면 (x, y) 의 창 정보 dict (exe, title, x, y …). Windows 가 아니면 None. 테스트에서 바꿔 끼운다."""
+    import sys
+    if sys.platform != "win32":
+        return None
+    from ..wincapture import window_info_at as f
+    return f(x, y)
+
+
+class LoginPanel(QWidget):
+    """자동 로그인 항목 설정과 실행 버튼. 항목은 editor.data.logins 에 바로 반영·자동 저장된다."""
+
+    def __init__(self, editor: "EditorWindow", on_login: Callable[[list], str]):
+        from PySide6.QtWidgets import QDoubleSpinBox, QListWidget, QListWidgetItem, QPlainTextEdit  # noqa: F401
+        super().__init__()
+        self.editor = editor
+        self.on_login = on_login
+        self._loading = False
+        self._busy = False
+
+        run_all = self.run_all_btn = QPushButton("전체 자동 로그인")
+        run_all.setStyleSheet("font-weight:600; padding: 6px 14px;")
+        run_all.setToolTip("체크된 항목을 위에서부터 차례로 로그인합니다. 열려 있으면 그 창에, 없으면 열어서 로그인합니다.")
+        run_all.clicked.connect(lambda: self._run([t for t in self.targets if t.enabled]))
+        top = QHBoxLayout()
+        top.addWidget(run_all)
+        hint = QLabel("버튼을 누를 때만 실행됩니다. 실행 중에는 마우스·키보드를 건드리지 마세요.")
+        hint.setStyleSheet("color: gray;")
+        top.addWidget(hint, 1)
+
+        self.list = QListWidget()
+        self.list.currentRowChanged.connect(self._select)
+        self.list.itemChanged.connect(self._item_changed)
+        add_p = QPushButton("+ 프로그램")
+        add_p.clicked.connect(lambda: self._add("program"))
+        add_w = QPushButton("+ 웹 사이트")
+        add_w.clicked.connect(lambda: self._add("web"))
+        delete = QPushButton("삭제")
+        delete.clicked.connect(self._delete)
+        lrow = QHBoxLayout()
+        for b in (add_p, add_w, delete):
+            lrow.addWidget(b)
+        left = QVBoxLayout()
+        left.addWidget(QLabel("항목 (체크 = 전체 자동 로그인에 포함)"))
+        left.addWidget(self.list, 1)
+        left.addLayout(lrow)
+
+        # 선택한 항목 편집
+        self.name = QLineEdit()
+        self.kind = QLabel()
+        self.exe = QLineEdit()
+        self.exe.setPlaceholderText("예: AtMessenger.exe (창 지정으로 채움)")
+        self.title = QLineEdit()
+        self.title.setPlaceholderText("창 제목에 들어가는 글자 (비우면 검사 안 함)")
+        pick_win = QPushButton("창 지정 (좌표 따기)")
+        pick_win.setToolTip("로그인할 창(로그인 화면)을 한 번 클릭하면 실행 파일 이름과 창 제목을 채웁니다.")
+        pick_win.clicked.connect(self._pick_window)
+        self.found = QLabel()
+        self.found.setStyleSheet("color: gray;")
+        self.found.setWordWrap(True)
+        self.path = QLineEdit()
+        browse = QPushButton("찾아보기…")
+        browse.clicked.connect(self._browse)
+        prow = QHBoxLayout()
+        prow.addWidget(self.path, 1)
+        prow.addWidget(browse)
+        self.url = QLineEdit()
+        self.url.setPlaceholderText("https://…")
+        self.user = QLineEdit()
+        self.pw = QLineEdit()
+        self.pw.setEchoMode(QLineEdit.EchoMode.Password)
+        self.id_pos, self.pw_pos = QLabel(), QLabel()
+        id_pick, pw_pick = QPushButton("좌표 따기"), QPushButton("좌표 따기")
+        id_clear, pw_clear = QPushButton("지우기"), QPushButton("지우기")
+        id_pick.clicked.connect(lambda: self._pick_field("id"))
+        pw_pick.clicked.connect(lambda: self._pick_field("pw"))
+        id_clear.clicked.connect(lambda: self._clear_field("id"))
+        pw_clear.clicked.connect(lambda: self._clear_field("pw"))
+        idrow, pwrow = QHBoxLayout(), QHBoxLayout()
+        for row, w in ((idrow, (self.id_pos, id_pick, id_clear)), (pwrow, (self.pw_pos, pw_pick, pw_clear))):
+            row.addWidget(w[0], 1)
+            row.addWidget(w[1])
+            row.addWidget(w[2])
+        self.enter = QCheckBox("마지막에 Enter 누르기")
+        self.wait = _spin(1, 600, " 초")
+        self.ready = QDoubleSpinBox()
+        self.ready.setRange(0, 60)
+        self.ready.setSingleStep(0.5)
+        self.ready.setSuffix(" 초")
+        run_one = self.run_one_btn = QPushButton("이 항목 로그인")
+        run_one.clicked.connect(lambda: self._run([self.current] if self.current else []))
+
+        self.form_box = QGroupBox("항목 설정")
+        f = self.form = QFormLayout(self.form_box)
+        f.addRow("이름", self.name)
+        f.addRow("종류", self.kind)
+        f.addRow("", pick_win)
+        f.addRow("실행 파일 이름", self.exe)
+        f.addRow("창 제목 포함 글자", self.title)
+        f.addRow("", self.found)
+        self.path_label = QLabel("실행 경로")
+        f.addRow(self.path_label, prow)
+        self.url_label = QLabel("웹 주소")
+        f.addRow(self.url_label, self.url)
+        f.addRow("아이디", self.user)
+        f.addRow("비밀번호", self.pw)
+        f.addRow("아이디 칸", idrow)
+        f.addRow("비밀번호 칸", pwrow)
+        f.addRow("", self.enter)
+        f.addRow("열고 창 기다리기 (최대)", self.wait)
+        f.addRow("창이 뜬 뒤 준비 대기", self.ready)
+        f.addRow("", run_one)
+
+        self.result = QPlainTextEdit()
+        self.result.setReadOnly(True)
+        self.result.setMaximumHeight(110)
+        self.result.setPlaceholderText("실행 결과")
+
+        body = QHBoxLayout()
+        body.addLayout(left, 2)
+        body.addWidget(self.form_box, 5)
+        lay = QVBoxLayout(self)
+        lay.addLayout(top)
+        lay.addLayout(body, 1)
+        lay.addWidget(self.result)
+
+        for w in (self.name, self.exe, self.title, self.path, self.url, self.user):
+            w.editingFinished.connect(self._apply)
+        self.pw.editingFinished.connect(self._apply_password)
+        self.enter.toggled.connect(self._apply)
+        self.wait.valueChanged.connect(self._apply)
+        self.ready.valueChanged.connect(self._apply)
+        self.load()
+
+    # 데이터
+    @property
+    def targets(self):
+        return self.editor.data.logins
+
+    @property
+    def current(self):
+        row = self.list.currentRow()
+        return self.targets[row] if 0 <= row < len(self.targets) else None
+
+    def load(self, row: int | None = None):
+        from PySide6.QtWidgets import QListWidgetItem
+        self._loading = True
+        keep = self.list.currentRow() if row is None else row
+        self.list.clear()
+        for t in self.targets:
+            it = QListWidgetItem(self._label(t))
+            it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            it.setCheckState(Qt.CheckState.Checked if t.enabled else Qt.CheckState.Unchecked)
+            self.list.addItem(it)
+        self._loading = False
+        self.list.setCurrentRow(min(max(keep, 0), len(self.targets) - 1) if self.targets else -1)
+        self._select(self.list.currentRow())
+
+    @staticmethod
+    def _label(t) -> str:
+        from ..core.autologin import KINDS
+        return f"{t.name or '(이름 없음)'}  ·  {KINDS.get(t.kind, '')}"
+
+    def _select(self, row: int):
+        if self._loading:
+            return
+        t = self.current
+        self.form_box.setEnabled(t is not None)
+        if t is None:
+            return
+        from ..core.autologin import KINDS
+        self._loading = True
+        web = t.kind == "web"
+        self.name.setText(t.name)
+        self.kind.setText(KINDS.get(t.kind, t.kind))
+        self.exe.setText(t.exe)
+        self.title.setText(t.title)
+        self.path.setText(t.path)
+        self.path_label.setText("브라우저 경로 (비우면 기본 브라우저)" if web else "실행 경로 (창이 없을 때 열기)")
+        self.url.setText(t.url)
+        self.url.setVisible(web)
+        self.url_label.setVisible(web)
+        self.user.setText(t.user)
+        self.pw.clear()
+        self.pw.setPlaceholderText("저장됨 (바꾸려면 새로 입력)" if t.secret else "")
+        self.id_pos.setText(f"창 기준 ({t.id_x}, {t.id_y})" if (t.id_x or t.id_y) else "지정 안 함 (커서가 있는 칸)")
+        self.pw_pos.setText(f"창 기준 ({t.pw_x}, {t.pw_y})" if (t.pw_x or t.pw_y) else "지정 안 함 (아이디 뒤 Tab)")
+        self.enter.setChecked(t.press_enter)
+        self.wait.setValue(t.launch_wait)
+        self.ready.setValue(t.ready_delay)
+        self.found.setText("")
+        self._loading = False
+
+    def _changed(self):
+        self.editor.changed(refresh=False)
+
+    def _apply(self, *_):
+        t = self.current
+        if self._loading or t is None:
+            return
+        t.name = self.name.text().strip()
+        t.exe = self.exe.text().strip()
+        t.title = self.title.text().strip()
+        t.path = self.path.text().strip().strip('"')
+        t.url = self.url.text().strip()
+        t.user = self.user.text()
+        t.press_enter = self.enter.isChecked()
+        t.launch_wait = self.wait.value()
+        t.ready_delay = float(self.ready.value())
+        item = self.list.currentItem()
+        if item is not None:
+            self._loading = True
+            item.setText(self._label(t))
+            self._loading = False
+        self._changed()
+
+    def _apply_password(self):
+        t = self.current
+        if self._loading or t is None or not self.pw.text():
+            return
+        t.password = self.pw.text()  # 보호해서 저장 (평문은 남기지 않음)
+        self.pw.clear()
+        self.pw.setPlaceholderText("저장됨 (바꾸려면 새로 입력)")
+        self._changed()
+
+    def _item_changed(self, item):
+        if self._loading:
+            return
+        row = self.list.row(item)
+        if 0 <= row < len(self.targets):
+            self.targets[row].enabled = item.checkState() == Qt.CheckState.Checked
+            self._changed()
+
+    def _add(self, kind: str):
+        from ..core.autologin import LoginTarget
+        self.targets.append(LoginTarget(name="새 웹 사이트" if kind == "web" else "새 프로그램", kind=kind))
+        self.load(len(self.targets) - 1)
+        self._changed()
+
+    def _delete(self):
+        row = self.list.currentRow()
+        if 0 <= row < len(self.targets):
+            if QMessageBox.question(self, "삭제", f"'{self.targets[row].name}' 항목을 지울까요?") \
+                    != QMessageBox.StandardButton.Yes:
+                return
+            del self.targets[row]
+            self.load(row)
+            self._changed()
+
+    def _browse(self):
+        t = self.current
+        if t is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "실행 파일 선택", "", "프로그램 (*.exe *.lnk);;모든 파일 (*)")
+        if path:
+            self.path.setText(path.replace("/", "\\"))
+            if t.kind == "program" and not self.exe.text() and path.lower().endswith(".exe"):
+                self.exe.setText(Path(path).name)
+            self._apply()
+
+    # 좌표 따기
+    def _pick(self):
+        return pick_coordinate(self.editor.backend, [self.editor])
+
+    def _pick_window(self):
+        t = self.current
+        pt = self._pick()
+        if t is None or not pt:
+            return
+        info = window_info_at(*pt)
+        if info is None:
+            QMessageBox.warning(self, "창 지정", "그 자리에서 창을 찾지 못했습니다 (Windows 에서만 됩니다).")
+            return
+        self.exe.setText(info["exe"])
+        if t.kind == "web":
+            self.title.setText(info["title"])  # 페이지 제목 중 늘 들어가는 부분만 남기도록 고쳐 쓰면 된다
+        self.found.setText(f"찾은 창: {info['exe']} · 제목 \"{info['title']}\"")
+        self._apply()
+
+    def _pick_field(self, which: str):
+        t = self.current
+        pt = self._pick()
+        if t is None or not pt:
+            return
+        info = window_info_at(*pt)
+        if info is None:
+            QMessageBox.warning(self, "좌표 따기", "그 자리에서 창을 찾지 못했습니다 (Windows 에서만 됩니다).")
+            return
+        if t.exe and info["exe"].lower() != t.exe.lower():
+            if QMessageBox.question(self, "좌표 따기",
+                                    f"지정한 프로그램({t.exe})이 아니라 {info['exe']} 창입니다. 이 창 기준으로 저장할까요?") \
+                    != QMessageBox.StandardButton.Yes:
+                return
+        if not t.exe:
+            t.exe = info["exe"]
+        rx, ry = pt[0] - info["x"], pt[1] - info["y"]
+        if which == "id":
+            t.id_x, t.id_y = rx, ry
+        else:
+            t.pw_x, t.pw_y = rx, ry
+        self._select(self.list.currentRow())
+        self._changed()
+
+    def _clear_field(self, which: str):
+        t = self.current
+        if t is None:
+            return
+        if which == "id":
+            t.id_x = t.id_y = 0
+        else:
+            t.pw_x = t.pw_y = 0
+        self._select(self.list.currentRow())
+        self._changed()
+
+    # 실행
+    def _run(self, targets: list):
+        if self._busy or not targets:
+            if not targets:
+                self.result.setPlainText("실행할 항목이 없습니다 (체크된 항목이 없음).")
+            return
+        self._apply()
+        self.editor.flush()
+        self._busy = True
+        self.run_all_btn.setEnabled(False)
+        self.run_one_btn.setEnabled(False)
+        self.result.setPlainText("실행 중… " + ", ".join(t.name for t in targets))
+        from .dialogs import run_in_background
+        snapshot = [type(t).from_dict(t.to_dict()) for t in targets]  # 실행 중 편집해도 섞이지 않게
+        run_in_background(lambda: self.on_login(snapshot), self._done)
+
+    def _done(self, text: str):
+        self._busy = False
+        self.run_all_btn.setEnabled(True)
+        self.run_one_btn.setEnabled(True)
+        self.result.setPlainText(text)
+        self.editor.raise_()

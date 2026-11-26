@@ -429,7 +429,9 @@ class EditorWindow(QMainWindow):
                  messenger_log_dir: Path | None = None,
                  autostart=None,
                  on_cover: Callable[[], None] | None = None,
-                 on_change_cover_password: Callable[[QWidget], bool] | None = None):
+                 on_change_cover_password: Callable[[QWidget], bool] | None = None,
+                 on_toggle_running: Callable[[], None] | None = None,
+                 on_login: Callable[[list], str] | None = None):
         super().__init__()
         self._on_change_password = on_change_password
         self._on_change_cover_password = on_change_cover_password
@@ -479,6 +481,13 @@ class EditorWindow(QMainWindow):
         bottom = QHBoxLayout()
         bottom.addWidget(self.status, 1)
         bottom.addWidget(self.last_run)
+        self.run_btn = QPushButton()
+        self.run_btn.setCheckable(True)
+        self.run_btn.setToolTip("매크로(시간대별 예약 실행) 켜기/끄기. 트레이 메뉴의 실행/일시정지와 같습니다.")
+        if on_toggle_running is not None:
+            self.run_btn.clicked.connect(lambda: on_toggle_running())
+            bottom.addWidget(self.run_btn)
+        self.set_running(self.data.settings.running)
         if on_cover is not None:
             cover_btn = QPushButton("화면 가리기")
             cover_btn.setToolTip("편집 창을 트레이로 숨기고 화면을 검게 가립니다. 매크로·감시는 그대로 돌아갑니다.\n"
@@ -513,7 +522,7 @@ class EditorWindow(QMainWindow):
         ml.addLayout(top)
         ml.addWidget(splitter, 1)
 
-        from .panels import MessengerPanel, PowerPanel  # 순환 import 방지
+        from .panels import LoginPanel, MessengerPanel, PowerPanel  # 순환 import 방지
         self.tabs = QTabWidget()
         self.tabs.addTab(macro, "매크로")
         self.messenger_panel = MessengerPanel(self, messenger_log_dir)
@@ -522,6 +531,10 @@ class EditorWindow(QMainWindow):
         if power is not None and on_power_now is not None:
             self.power_panel = PowerPanel(self, power, on_power_now, autostart)
             self.tabs.addTab(self.power_panel, "PC 전원")
+        self.login_panel = None
+        if on_login is not None:
+            self.login_panel = LoginPanel(self, on_login)
+            self.tabs.addTab(self.login_panel, "자동 로그인")
 
         central = QWidget()
         cl = QVBoxLayout(central)
@@ -561,6 +574,14 @@ class EditorWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
         QMessageBox.information(self, "시범 작동", msg)
+
+    def set_running(self, running: bool):
+        """매크로 켜짐/꺼짐 표시 (실제 상태는 트레이 앱이 들고 있다)."""
+        self.data.settings.running = running
+        self.run_btn.setChecked(running)
+        self.run_btn.setText("매크로 ON" if running else "매크로 OFF")
+        self.run_btn.setStyleSheet("background:#15803d;color:white;font-weight:600;" if running
+                                   else "background:#6b7280;color:white;font-weight:600;")
 
     def set_last_run(self, text: str):
         self.last_run.setText(f"마지막 실행: {text}" if text else "")
@@ -614,6 +635,8 @@ class EditorWindow(QMainWindow):
         self.data = data.clone()
         self._rebind()
         self.messenger_panel.load()
+        if self.login_panel is not None:
+            self.login_panel.load()
 
     def set_live(self, messenger_snapshot: list[dict[str, str]]):
         """트레이 앱이 2초마다 넘겨 주는 실시간 상태."""

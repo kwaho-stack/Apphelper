@@ -65,3 +65,17 @@ def test_wincapture_smoke():
         pytest.skip(got.encode("ascii", "replace").decode())
     img, (x, y) = got
     assert img.ndim == 3 and img.shape[2] == 3 and img.shape[0] > 0
+
+
+def test_autologin_windows_parts():
+    from apphelper import wincapture
+    from apphelper.autologin_win import WinLoginOps, matches
+    from apphelper.core.autologin import LoginTarget, protect, unprotect
+    s = protect("비번 pw!")
+    assert s.startswith("dpapi:") and unprotect(s) == "비번 pw!"
+    wins = wincapture.list_windows()
+    assert isinstance(wins, list)
+    assert matches({"exe": "AtMessenger.exe", "title": "AT 메신저"}, LoginTarget(exe="atmessenger.exe"))
+    assert not matches({"exe": "x.exe", "title": "y"}, LoginTarget())
+    ops = WinLoginOps(None)
+    assert ops.find(LoginTarget(exe="no-such-program-xyz.exe")) is None

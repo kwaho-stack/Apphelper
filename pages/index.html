@@ -88,6 +88,14 @@
   .pc { display: flex; align-items: center; gap: 8px; font-weight: 600; }
   .pc.on { color: var(--ok); }
   .pc.off { color: var(--muted); }
+  .mc-hours { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 6px; margin-top: 8px; }
+  .mc-hour { display: flex; align-items: center; gap: 4px; padding: 4px 6px; border: 1px solid var(--line);
+             border-radius: 8px; font-size: 13px; }
+  .mc-hour.dirty { border-color: var(--accent); }
+  .mc-hour b { width: 34px; flex: none; white-space: nowrap; }
+  .mc-hour span { white-space: nowrap; }
+  .mc-hour input[type=number] { width: 44px; border: 1px solid var(--line); background: var(--bg); color: var(--text);
+                                border-radius: 6px; padding: 2px 4px; font: inherit; }
   .sched { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .shot { width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--line); display: block; }
   .shot-at { color: var(--muted); font-size: 13px; margin: 0; font-variant-numeric: tabular-nums; }
@@ -152,6 +160,26 @@
 
     <!-- 매크로 결과 -->
     <section data-panel="macro">
+      <!-- 매크로 조정 (PC 앱 설정에서 '결과 페이지에서 매크로 조정 허용'을 켜야 함) -->
+      <div class="card pad" id="mcCard" style="margin-top:10px">
+        <div class="row" style="justify-content:space-between">
+          <div class="pc off" id="mcState"><span class="dot"></span><span>확인 중…</span></div>
+          <button class="btn mc" type="button" id="mcToggle" disabled>-</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <select class="input mc" id="mcProfile" disabled aria-label="프로필"></select>
+          <button class="btn mc" type="button" id="mcProfileBtn" disabled>프로필 바꾸기</button>
+        </div>
+        <details id="mcHoursBox" style="margin-top:8px">
+          <summary>시간별 작동 · 분 범위 조정</summary>
+          <div id="mcHours" class="mc-hours"></div>
+          <div class="row" style="margin-top:8px">
+            <button class="btn primary mc grow" type="button" id="mcApply" disabled>변경 적용</button>
+            <button class="btn mc" type="button" id="mcReset" disabled>되돌리기</button>
+          </div>
+        </details>
+        <p class="status" id="mcMsg" style="margin-top:8px"></p>
+      </div>
       <div class="days" id="days" role="group" aria-label="날짜 선택" style="margin-top:10px"></div>
       <p class="summary" id="summary"></p>
       <div class="card"><ul id="list"></ul></div>
@@ -541,12 +569,13 @@
   }
 
   // 암호화된 request.bin 의 한 항목(screenshot / power)만 바꾸고 나머지는 그대로 둔다
-  function sendRequest(key, value) {
+  function sendRequest(key, value, append) {
     return readEncrypted("apphelper-remote", "request.bin")
       .catch(function () { return {}; })  // 풀 수 없으면(예전 토큰) 새로 쓴다
       .then(function (cur) {
         var next = cur && typeof cur === "object" ? cur : {};
-        next[key] = value;
+        // append: 명령을 목록 끝에 쌓는다 (PC 가 가져가기 전에 여러 번 눌러도 하나도 빠지지 않게)
+        next[key] = append ? (Array.isArray(next[key]) ? next[key] : []).concat(value).slice(-30) : value;
         return encryptJson(next);
       })
       .then(function (bytes) { return writeBranch("apphelper-remote", "request.bin", bytes); });
@@ -570,8 +599,8 @@
 
   // PC 와 이 기기의 시계가 다를 수 있어서, PC 시각 비교와 함께 '상태가 새로 올라온 걸 이 기기에서 본 시각'도 쓴다
   var statusSeen = { v: null, at: 0 };
-  function pcOnline() {
-    if (!(pcStatus && pcStatus.online && pcStatus.remote_power !== false)) return false;
+  function pcOnline(flag) {
+    if (!(pcStatus && pcStatus.online && pcStatus[flag || "remote_power"] !== false)) return false;
     return Date.now() - (pcStatus.updated_at || 0) < ONLINE_WINDOW_MS ||
            Date.now() - statusSeen.at < ONLINE_WINDOW_MS;
   }
@@ -638,9 +667,111 @@
       })
       .then(function () {
         renderPower();
-        powerTimer = setTimeout(pollPower, pendingPower ? 3000 : 10000);  // 명령을 보낸 뒤에는 자주 확인
+        renderMacroCtl();
+        powerTimer = setTimeout(pollPower, pendingPower || pendingMacro.length ? 3000 : 10000);  // 명령을 보낸 뒤에는 자주 확인
       });
   }
+
+  // ------------------------------------------------------------------ 매크로 조정
+  var pendingMacro = [], mcShown = null, mcDirty = {};
+
+  function mcMsg(text, err) {
+    $("mcMsg").textContent = text || "";
+    $("mcMsg").className = "status" + (err ? " err" : "");
+  }
+
+  function macroOnline() {
+    return pcOnline("remote_macro") && pcStatus.remote_macro === true && !!pcStatus.macro;
+  }
+
+  function renderMacroCtl() {
+    var online = macroOnline(), m = online ? pcStatus.macro : null;
+    // 보낸 명령이 PC 에서 적용됐는지
+    if (pendingMacro.length && pcStatus && pcStatus.macro_done) {
+      var done = pcStatus.macro_done;
+      var left = pendingMacro.filter(function (id) { return done.indexOf(id) < 0; });
+      if (!left.length && pendingMacro.length) { mcMsg("PC 에 반영됐습니다."); mcDirty = {}; mcShown = null; }
+      pendingMacro = left;
+    }
+    var st = $("mcState");
+    st.className = "pc " + (online && m.running ? "on" : "off");
+    st.lastChild.textContent = !online ? (pcStatus && pcStatus.remote_macro === false
+        ? "PC 앱 설정에서 '결과 페이지에서 매크로 조정 허용'을 켜야 합니다" : "PC 응답 없음 (꺼져 있거나 조정 허용이 꺼짐)")
+      : "매크로 " + (m.running ? "켜짐" : "꺼짐") + " · 프로필 [" + m.profile + "]";
+    Array.prototype.forEach.call(document.querySelectorAll(".mc"), function (b) { b.disabled = !online || pendingMacro.length > 0; });
+    if (!online) return;
+    $("mcToggle").textContent = m.running ? "매크로 끄기" : "매크로 켜기";
+    $("mcToggle").className = "btn mc " + (m.running ? "danger" : "primary");
+    var sel = $("mcProfile"), key = JSON.stringify(m);
+    if (mcShown === key) return;  // 바뀐 게 없으면 입력 중인 내용을 지우지 않는다
+    if (Object.keys(mcDirty).length && mcShown !== null) return;
+    mcShown = key;
+    sel.textContent = "";
+    m.profiles.forEach(function (p) {
+      var o = el("option", "", p); o.value = p; o.selected = p === m.profile; sel.appendChild(o);
+    });
+    var box = $("mcHours");
+    box.textContent = "";
+    m.slots.forEach(function (sl, h) {
+      var row = el("label", "mc-hour");
+      row.dataset.hour = h;
+      row.appendChild(el("b", "", h + "시"));
+      var on = el("input"); on.type = "checkbox"; on.checked = !!sl[0];
+      var a = el("input"); a.type = "number"; a.min = 0; a.max = 59; a.value = sl[1];
+      var b = el("input"); b.type = "number"; b.min = 0; b.max = 59; b.value = sl[2];
+      [on, a, b].forEach(function (i) {
+        i.onchange = function () {
+          var cur = [on.checked, Number(a.value), Number(b.value)];
+          var same = cur[0] === !!sl[0] && cur[1] === sl[1] && cur[2] === sl[2];
+          if (same) delete mcDirty[h]; else mcDirty[h] = cur;
+          row.classList.toggle("dirty", !same);
+        };
+      });
+      row.appendChild(on); row.appendChild(a); row.appendChild(el("span", "", "~")); row.appendChild(b);
+      row.appendChild(el("span", "", "분"));
+      box.appendChild(row);
+    });
+  }
+
+  function sendMacro(ops, label) {
+    var now = Date.now();
+    ops.forEach(function (op) { op.id = randomId(); op.at = now; });
+    mcMsg("전송 중…");
+    sendRequest("macro", ops, true)
+      .then(function () {
+        pendingMacro = pendingMacro.concat(ops.map(function (op) { return op.id; }));
+        mcMsg("\"" + label + "\" 전송됨 — PC 반영 대기 중 (보통 10초 안)");
+        renderMacroCtl();
+        pollPower();
+      })
+      .catch(function (e) { mcMsg(explain(e), true); });
+  }
+
+  $("mcToggle").onclick = function () {
+    var on = !pcStatus.macro.running;
+    if (!on && !confirm("매크로를 끌까요? 다시 켤 때까지 예약 실행을 하지 않습니다.")) return;
+    sendMacro([{ op: "running", value: on }], on ? "매크로 켜기" : "매크로 끄기");
+  };
+  $("mcProfileBtn").onclick = function () {
+    var name = $("mcProfile").value;
+    if (name === pcStatus.macro.profile) { mcMsg("이미 그 프로필입니다."); return; }
+    mcDirty = {};
+    sendMacro([{ op: "profile", name: name }], "프로필 [" + name + "] 로 바꾸기");
+  };
+  $("mcApply").onclick = function () {
+    var hours = Object.keys(mcDirty);
+    if (!hours.length) { mcMsg("바꾼 시간대가 없습니다."); return; }
+    var bad = hours.filter(function (h) {
+      return mcDirty[h].slice(1).some(function (v) { return !(v >= 0 && v <= 59 && Math.floor(v) === v); });
+    });
+    if (bad.length) { mcMsg(bad.map(function (h) { return h + "시"; }).join(", ") + ": 분은 0~59 로 입력하세요.", true); return; }
+    var prof = pcStatus.macro.profile;
+    sendMacro(hours.map(function (h) {
+      var v = mcDirty[h];
+      return { op: "slot", profile: prof, hour: Number(h), on: v[0], s: v[1], e: v[2] };
+    }), hours.map(function (h) { return h + "시"; }).join(", ") + " 변경");
+  };
+  $("mcReset").onclick = function () { mcDirty = {}; mcShown = null; mcMsg(""); renderMacroCtl(); };
 
   function sendPower(action, atMs, label) {
     var cmd = { id: randomId(), action: action, at: atMs || null,

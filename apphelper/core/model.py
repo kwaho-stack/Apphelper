@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .autologin import LoginTarget, default_targets
 from .messenger import MessengerConfig
 
 HOURS = 24
@@ -161,6 +162,7 @@ class Settings:
     remote_screenshot: bool = False  # 결과 페이지에서 스크린샷 요청 허용 (기본 꺼짐)
     remote_power: bool = False       # 결과 페이지에서 PC 종료/다시시작 제어 허용 (기본 꺼짐)
     power_force: bool = False        # 강제 종료/다시시작 (저장 안 된 프로그램도 닫음)
+    remote_macro: bool = False       # 결과 페이지에서 매크로 켜기/끄기·프로필·시간대 조정 허용 (기본 꺼짐)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -193,6 +195,8 @@ class AppData:
     profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
     # 메신저 상태 감시 설정 (모든 프로필 공통)
     messenger: MessengerConfig = field(default_factory=MessengerConfig)
+    # 자동 로그인 항목 (모든 프로필 공통)
+    logins: list[LoginTarget] = field(default_factory=default_targets)
 
     # 조회 도우미
     def action(self, action_id: str) -> BasicAction | None:
@@ -279,12 +283,15 @@ class AppData:
             "profiles": profiles,
             "settings": self.settings.to_dict(),
             "messenger": self.messenger.to_dict(),
+            "logins": [t.to_dict() for t in self.logins],
         }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "AppData":
         data = cls(settings=Settings.from_dict(d.get("settings", {})),
                    messenger=MessengerConfig.from_dict(d.get("messenger")))
+        if isinstance(d.get("logins"), list):
+            data.logins = [LoginTarget.from_dict(t) for t in d["logins"] if isinstance(t, dict)]
         if "profiles" in d:
             profiles = {str(k): v for k, v in d["profiles"].items()}
         else:  # version 1: 프로필 없이 저장된 데이터는 '기본' 프로필로 옮긴다
