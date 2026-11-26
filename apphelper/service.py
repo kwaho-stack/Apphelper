@@ -57,11 +57,17 @@ class Service:
         clock: Callable[[], float] = time.time,
         window_grabber: Callable | None = None,
         net_probe: Callable[[], bool] | None = None,
+        notifier: Callable[[str, str, str], None] | None = None,
     ):
         self.data = data.clone()
         self.clock = clock
         # 메신저 '가려져도 읽기': WindowRef → (그림, 창 위치) 또는 실패 이유 문자열 (wincapture.grab_messenger)
         self.window_grabber = window_grabber
+        # 휴대폰 알림 (텔레그램): notifier(토큰, 채팅 ID, 글). 주 대상이 온라인·자리비움 → 오프라인일 때
+        self.notifier = notifier
+        self._main_last_real: str | None = None  # 주 대상의 마지막 실제 상태 (ON/AWAY/OFF, 확인불가 제외)
+        self._messenger_quiet = False
+        self.last_notify: str = ""               # 마지막 알림 결과 (편집 화면 표시용)
         # 메신저 상태 감시 (설정에서 켜고 좌표가 있을 때만 돈다)
         self.messenger_log = MessengerLog(messenger_log_dir) if messenger_log_dir else None
         self.monitor: MessengerMonitor | None = None
@@ -287,6 +293,8 @@ class Service:
         with self._monitor_lock:
             if self.monitor is None or not self.monitor.same_layout(cfg):
                 self.monitor = MessengerMonitor(cfg, self.messenger_log, self.now())
+                if self.monitor.main.state in ("ON", "AWAY", "OFF"):
+                    self._main_last_real = self.monitor.main.state
             else:
                 self.monitor.config = cfg  # 확인 주기·허용오차 같은 값은 그대로 반영
             return self.monitor
@@ -296,12 +304,53 @@ class Service:
         monitor = self._ensure_monitor()
         if monitor is None:
             return False
+        quiet = monitor.config.quiet_range(self.now()) is not None
+        if quiet != self._messenger_quiet:  # 미작동 시간에 들어가거나 끝남 → 페이지에 표시
+            self._messenger_quiet = quiet
+            self.request_publish()
+        if quiet:
+            return False
         source = self.messenger_source(monitor.config)
         with self._monitor_lock:
-            changed, _ = monitor.step(source, self.now())
+            changed, main_changed = monitor.step(source, self.now())
+        if main_changed:
+            self._main_changed(monitor)
         if changed:
             self.request_publish()
         return changed
+
+    def _main_changed(self, monitor) -> None:
+        """주 대상 상태가 바뀜. 온라인·자리비움이던 사람이 오프라인이 되면 휴대폰 알림."""
+        state = monitor.main.state
+        if state not in ("ON", "AWAY", "OFF"):
+            return  # 확인불가는 무시 (가림·로그인 화면)
+        prev, self._main_last_real = self._main_last_real, state
+        if state != "OFF" or prev not in ("ON", "AWAY") or not monitor.config.notify_offline:
+            return
+        name = monitor.config.target.name or "주 대상"
+        since = (monitor.main.since or "")[11:16]
+        self.notify(f"🔴 {name} 오프라인" + (f" ({since})" if since else ""))
+
+    def notify(self, text: str, wait: bool = False) -> str:
+        """텔레그램 알림. 기본은 백그라운드로 보내고, wait=True 면 결과 설명을 돌려준다 (시험 알림용)."""
+        s = self.data.settings
+        send = self.notifier
+        if send is None:
+            from .core.telegram import send
+
+        def go() -> str:
+            try:
+                send(s.telegram_token, s.telegram_chat_id, text)
+                self.last_notify = f"{self.now():%m/%d %H:%M} 알림 보냄: {text}"
+            except Exception as e:  # noqa: BLE001 - 알림 실패로 감시가 멈추지 않게
+                self.last_notify = f"{self.now():%m/%d %H:%M} 알림 실패: {e}"
+                log.debug("텔레그램 알림 실패: %s", e)
+            return self.last_notify
+
+        if wait:
+            return go()
+        threading.Thread(target=go, daemon=True, name="apphelper-notify").start()
+        return ""
 
     def messenger_source(self, cfg):
         """메신저 색을 읽을 곳: 평소엔 화면, '가려져도 읽기'면 메신저 창을 직접 찍은 그림."""
@@ -335,7 +384,13 @@ class Service:
             data["off"] = True
             return data
         with self._monitor_lock:
-            return monitor.web_data(self.now())
+            data = monitor.web_data(self.now())
+        quiet = cfg.quiet_range(self.now())
+        if quiet is not None:  # 미작동 시간: 마지막 상태를 그대로 보여 주고 쉬는 중이라고 표시
+            from .core.messenger import fmt_minutes
+            data["off"] = True
+            data["off_reason"] = f"미작동 시간 ({fmt_minutes(quiet[0])}~{fmt_minutes(quiet[1])})"
+        return data
 
     # ------------------------------------------------------------ 화면 가리기 비상종료
     def record_emergency(self, when: datetime | None = None) -> None:

@@ -92,6 +92,16 @@ class MessengerConfig:
     others: list[Point] = field(default_factory=list)
     capture_window: bool = False  # 가려져도 읽기 (메신저 창 직접 캡처)
     window: WindowRef = field(default_factory=WindowRef)
+    notify_offline: bool = False  # 주 대상이 오프라인이 되면 휴대폰(텔레그램) 알림
+    quiet: list[tuple[int, int]] = field(default_factory=list)  # 미작동 시간 [(시작 분, 끝 분)], 자정 넘김 가능
+
+    def quiet_range(self, now: datetime) -> tuple[int, int] | None:
+        """지금이 미작동 시간이면 그 범위, 아니면 None."""
+        m = now.hour * 60 + now.minute
+        for a, b in self.quiet:
+            if (a <= m < b) if a <= b else (m >= a or m < b):
+                return a, b
+        return None
 
     @property
     def ready(self) -> bool:
@@ -105,6 +115,7 @@ class MessengerConfig:
             "max_web_events": self.max_web_events, "target": self.target.to_dict(),
             "anchor": self.anchor.to_dict(), "others": [p.to_dict() for p in self.others],
             "capture_window": self.capture_window, "window": self.window.to_dict(),
+            "notify_offline": self.notify_offline, "quiet": [list(q) for q in self.quiet],
         }
 
     @classmethod
@@ -124,7 +135,20 @@ class MessengerConfig:
         c.others = [Point.from_dict(p) for p in d.get("others", []) if isinstance(p, dict)]
         c.capture_window = bool(d.get("capture_window", False))
         c.window = WindowRef.from_dict(d.get("window"))
+        c.notify_offline = bool(d.get("notify_offline", False))
+        c.quiet = []
+        for q in d.get("quiet") or []:
+            try:
+                a, b = (max(0, min(1439, int(v))) for v in q[:2])
+            except (TypeError, ValueError):
+                continue
+            if a != b:
+                c.quiet.append((a, b))
         return c
+
+
+def fmt_minutes(m: int) -> str:
+    return f"{m // 60:02d}:{m % 60:02d}"
 
 
 def rebase(cfg: MessengerConfig, x: int, y: int) -> bool:

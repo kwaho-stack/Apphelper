@@ -151,6 +151,45 @@ class MessengerPanel(QWidget):
         df.addRow("하루 마감 시각", self.rollover)
         df.addRow("색 평균 반경", self.radius)
 
+        # 미작동 시간 (이 시간에는 감시를 쉰다)
+        qbox = QGroupBox("미작동 시간 (이 시간에는 감시를 쉼, 자정 넘김 가능)")
+        ql = QVBoxLayout(qbox)
+        self.quiet_rows = QVBoxLayout()
+        ql.addLayout(self.quiet_rows)
+        add_q = QPushButton("+ 미작동 시간 추가")
+        add_q.clicked.connect(self._add_quiet)
+        ql.addWidget(add_q)
+
+        # 휴대폰 알림 (텔레그램)
+        nbox = QGroupBox("휴대폰 알림 (텔레그램)")
+        nf = QFormLayout(nbox)
+        self.notify = QCheckBox("주 대상이 오프라인이 되면 알림")
+        self.notify.setToolTip("온라인·자리비움이던 주 대상이 오프라인으로 바뀌면(연속 확인 횟수를 채웠을 때) 알립니다.\n"
+                               "확인불가·미작동 시간에는 알리지 않습니다.")
+        self.notify.toggled.connect(self._apply)
+        self.tg_token = QLineEdit()
+        self.tg_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self.tg_token.setPlaceholderText("@BotFather 에서 받은 봇 토큰")
+        self.tg_token.editingFinished.connect(self._apply_telegram)
+        self.tg_chat = QLineEdit()
+        self.tg_chat.setPlaceholderText("봇에게 메시지를 보낸 뒤 '찾기'")
+        self.tg_chat.editingFinished.connect(self._apply_telegram)
+        find = QPushButton("찾기")
+        find.clicked.connect(self._find_chat)
+        crow2 = QHBoxLayout()
+        crow2.addWidget(self.tg_chat, 1)
+        crow2.addWidget(find)
+        test = QPushButton("시험 알림 보내기")
+        test.clicked.connect(self._test_notify)
+        self.notify_status = QLabel()
+        self.notify_status.setWordWrap(True)
+        self.notify_status.setStyleSheet("color: gray;")
+        nf.addRow("", self.notify)
+        nf.addRow("봇 토큰", self.tg_token)
+        nf.addRow("채팅 ID", crow2)
+        nf.addRow("", test)
+        nf.addRow("", self.notify_status)
+
         # 현재 상태
         self.live = QLabel("감시가 꺼져 있습니다")
         self.live.setTextFormat(Qt.TextFormat.RichText)
@@ -175,6 +214,8 @@ class MessengerPanel(QWidget):
         right = QVBoxLayout()
         right.addWidget(lbox)
         right.addWidget(dbox)
+        right.addWidget(qbox)
+        right.addWidget(nbox)
         right.addWidget(imp)
         right.addWidget(note)
         right.addStretch()
@@ -208,6 +249,11 @@ class MessengerPanel(QWidget):
         self.confirm.setValue(c.confirm_count)
         self.rollover.setValue(c.rollover_hour)
         self.radius.setValue(c.sample_radius)
+        self.notify.setChecked(c.notify_offline)
+        st = self.editor.data.settings
+        self.tg_token.setText(st.telegram_token)
+        self.tg_chat.setText(st.telegram_chat_id)
+        self._load_quiet()
         self.anchor_rgb.setText(f"RGB {tuple(c.anchor.rgb)}" if c.anchor.x else "미설정 (검사 안 함)")
         self.others.setRowCount(0)
         for p in c.others:
@@ -236,6 +282,7 @@ class MessengerPanel(QWidget):
         c.confirm_count = self.confirm.value()
         c.rollover_hour = self.rollover.value()
         c.sample_radius = self.radius.value()
+        c.notify_offline = self.notify.isChecked()
         self.refresh_target_now()
         self.editor.changed(refresh=False)
 
@@ -254,6 +301,113 @@ class MessengerPanel(QWidget):
             self.load()
             self.editor.changed(refresh=False)
         return WindowFrame(image, (c.window.x, c.window.y))
+
+    # 미작동 시간
+    def _load_quiet(self):
+        while self.quiet_rows.count():
+            item = self.quiet_rows.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        self._quiet_edits = []
+        for i, (a, b) in enumerate(self.cfg.quiet):
+            row = QWidget()
+            hl = QHBoxLayout(row)
+            hl.setContentsMargins(0, 0, 0, 0)
+            ea, eb = QTimeEdit(QTime(a // 60, a % 60)), QTimeEdit(QTime(b // 60, b % 60))
+            for e in (ea, eb):
+                e.setDisplayFormat("HH:mm")
+                e.timeChanged.connect(self._apply_quiet)
+            delete = QPushButton("삭제")
+            delete.clicked.connect(lambda _=False, idx=i: self._delete_quiet(idx))
+            hl.addWidget(ea)
+            hl.addWidget(QLabel("~"))
+            hl.addWidget(eb)
+            hl.addStretch()
+            hl.addWidget(delete)
+            self.quiet_rows.addWidget(row)
+            self._quiet_edits.append((ea, eb))
+        if not self.cfg.quiet:
+            empty = QLabel("없음 (항상 감시)")
+            empty.setStyleSheet("color: gray;")
+            self.quiet_rows.addWidget(empty)
+
+    def _apply_quiet(self, *_):
+        if self._loading:
+            return
+        q = []
+        for ea, eb in self._quiet_edits:
+            a = ea.time().hour() * 60 + ea.time().minute()
+            b = eb.time().hour() * 60 + eb.time().minute()
+            q.append((a, b))
+        self.cfg.quiet = q  # 시작=끝인 줄은 아무 효과 없음 (저장했다 불러올 때 빠진다)
+        self.editor.changed(refresh=False)
+
+    def _add_quiet(self):
+        self.cfg.quiet.append((22 * 60, 7 * 60))  # 기본: 밤 10시 ~ 아침 7시
+        self._loading = True
+        self._load_quiet()
+        self._loading = False
+        self.editor.changed(refresh=False)
+
+    def _delete_quiet(self, idx: int):
+        if 0 <= idx < len(self.cfg.quiet):
+            del self.cfg.quiet[idx]
+            self._loading = True
+            self._load_quiet()
+            self._loading = False
+            self.editor.changed(refresh=False)
+
+    # 텔레그램
+    def _apply_telegram(self):
+        if self._loading:
+            return
+        st = self.editor.data.settings
+        st.telegram_token = self.tg_token.text().strip()
+        st.telegram_chat_id = self.tg_chat.text().strip()
+        self.editor.changed(refresh=False)
+
+    def _find_chat(self):
+        from ..core import telegram
+        from .dialogs import run_in_background
+        self._apply_telegram()
+        token = self.editor.data.settings.telegram_token
+        self.notify_status.setText("찾는 중…")
+
+        def work() -> str:
+            try:
+                return "id:" + telegram.find_chat_id(token)
+            except telegram.TelegramError as e:
+                return f"err:{e}"
+        run_in_background(work, self._found_chat)
+
+    def _found_chat(self, result: str):
+        kind, _, value = result.partition(":")
+        if kind == "id":
+            self.tg_chat.setText(value)
+            self._apply_telegram()
+            self.notify_status.setText("채팅 ID 를 찾았습니다. '시험 알림 보내기'로 확인해 보세요.")
+        else:
+            self.notify_status.setText(f"⚠ {value}")
+
+    def _test_notify(self):
+        from ..core import telegram
+        from .dialogs import run_in_background
+        self._apply_telegram()
+        st = self.editor.data.settings
+        token, chat = st.telegram_token, st.telegram_chat_id
+        name = self.cfg.target.name or "주 대상"
+        self.notify_status.setText("보내는 중…")
+
+        def work() -> str:
+            try:
+                telegram.send(token, chat, f"✅ Apphelper 시험 알림 — {name} 이(가) 오프라인이 되면 이렇게 알려 드립니다.")
+                return "시험 알림을 보냈습니다. 휴대폰을 확인하세요."
+            except telegram.TelegramError as e:
+                return f"⚠ {e}"
+        run_in_background(work, self._notify_done)
+
+    def _notify_done(self, text: str):
+        self.notify_status.setText(text)
 
     def _read_rgb(self, x: int, y: int, source=None) -> tuple[int, int, int] | None:
         try:
@@ -420,6 +574,11 @@ class MessengerPanel(QWidget):
             color = STATE_COLORS.get(p["state"], "#6b7280")
             since = f" <span style='color:gray'>· {p['since'][11:16]}부터</span>" if p["since"] else ""
             rows.append(f"<b>{p['name']}</b> <span style='color:{color}'>● {p['state']}</span>{since}")
+        quiet = self.cfg.quiet_range(datetime.now())
+        if quiet is not None:
+            from ..core.messenger import fmt_minutes
+            rows.insert(0, f"<span style='color:#b45309'>⏸ 미작동 시간 ({fmt_minutes(quiet[0])}~{fmt_minutes(quiet[1])})"
+                           " — 감시를 쉬는 중 (아래는 마지막 상태)</span>")
         self.live.setText("<br>".join(rows))
 
 

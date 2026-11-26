@@ -372,6 +372,9 @@
     $("msgSince").textContent = m.since ? m.since + " 부터 · " + elapsed(m.since) : "";
     // 감시가 꺼져 있어도 마지막으로 기록된 상태를 그대로 보여 주고, 꺼져 있다는 표시를 붙인다
     $("msgPaused").hidden = !m.off;
+    $("msgPaused").textContent = m.off_reason
+      ? "⏸ " + m.off_reason + " — 이 시간에는 감시를 쉬고, 위 상태는 쉬기 전 마지막 기록입니다."
+      : "⏸ 감시 꺼짐 — PC 앱에서 메신저 상태 감시가 꺼져 있어, 위 상태는 꺼지기 전 마지막 기록입니다.";
 
     var others = m.others || [];
     $("othersCard").hidden = !others.length;
