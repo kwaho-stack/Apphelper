@@ -165,6 +165,7 @@ class Settings:
     remote_macro: bool = False       # 결과 페이지에서 매크로 켜기/끄기·프로필·시간대 조정 허용 (기본 꺼짐)
     remote_login: bool = False       # 결과 페이지에서 전체 자동 로그인 실행 허용 (기본 꺼짐)
     remote_cover: bool = False       # 결과 페이지에서 화면 가리기 허용 (기본 꺼짐)
+    remote_closeall: bool = False    # 결과 페이지에서 '모든 창 종료' 허용 (기본 꺼짐)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

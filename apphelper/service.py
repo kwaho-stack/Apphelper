@@ -86,6 +86,10 @@ class Service:
         self._last_cover_id = state.get("last_cover_id")
         self.on_cover_request: Callable[[str], None] | None = None
         self.cover_state: dict = {"active": False, "since": None, "error": None, "request": None}
+        # 페이지의 '모든 창 종료' 요청과 마지막 결과 {"request", "at", "count", "error"}
+        self._last_closeall_id = state.get("last_closeall_id")
+        self.on_closeall_request: Callable[[str], None] | None = None
+        self.closeall_state: dict | None = None
         # 네트워크 끊김 감지 → '네트워크가 끊기면 자동 로그인' 항목(예: Genian) 실행
         self.net_probe = net_probe or default_net_probe
         self.on_net_relogin: Callable[[], None] | None = None
@@ -369,6 +373,7 @@ class Service:
                                                           "done_macro_ids": self._done_macro,
                                                           "last_login_id": self._last_login_id,
                                                           "last_cover_id": self._last_cover_id,
+                                                          "last_closeall_id": self._last_closeall_id,
                                                           "emergency_at": self.emergency_at}),
                                               encoding="utf-8")
         except OSError as e:
@@ -376,7 +381,7 @@ class Service:
 
     def _remote_enabled(self) -> bool:
         s = self.data.settings
-        return s.github_ready and (s.remote_power or s.remote_macro or s.remote_login or s.remote_cover
+        return s.github_ready and (s.remote_power or s.remote_macro or s.remote_login or s.remote_cover or s.remote_closeall
                                    or (s.remote_screenshot and self.capture_image is not None))
 
     def _remote_loop(self) -> None:
@@ -450,6 +455,7 @@ class Service:
         self._handle_macro(raw.get("macro"))
         self._handle_login(raw.get("login"))
         self._handle_cover(raw.get("cover"))
+        self._handle_closeall(raw.get("closeall"))
         return self._handle_screenshot(raw, now_utc)
 
     def _handle_power(self, cmd) -> None:
@@ -521,6 +527,26 @@ class Service:
         if self.on_cover_request is not None:
             self.on_cover_request(rid)
 
+    def _handle_closeall(self, cmd) -> None:
+        """페이지의 '모든 창 종료' 요청 (2분 넘게 지난 요청은 무시)."""
+        if not self.data.settings.remote_closeall or not isinstance(cmd, dict) or not cmd.get("id"):
+            return
+        rid = str(cmd["id"])
+        if rid == self._last_closeall_id:
+            return
+        self._last_closeall_id = rid
+        self._save_remote_state()
+        if self.clock() * 1000 - float(cmd.get("at") or 0) > self.LOGIN_REQUEST_MAX_AGE_MS:
+            return
+        if self.on_closeall_request is not None:
+            self.on_closeall_request(rid)
+
+    def set_closeall_state(self, request: str, count: int | None, error: str | None = None) -> None:
+        self.closeall_state = {"request": request, "at": f"{self.now():%Y-%m-%d %H:%M:%S}",
+                               "count": count, "error": error}
+        self._macro_rev += 1
+        self._kick.set()
+
     def set_cover_state(self, active: bool, error: str | None = None, request: str | None = None) -> None:
         """화면 가리기 상태가 바뀌었다 (앱이 알림). 바로 페이지에 올린다."""
         was = self.cover_state
@@ -576,6 +602,8 @@ class Service:
             "macro_done": self._macro_acked if self.data.settings.remote_macro else [],
             "remote_login": self.data.settings.remote_login,
             "login": self.login_state if self.data.settings.remote_login else None,
+            "remote_closeall": self.data.settings.remote_closeall,
+            "closeall": self.closeall_state if self.data.settings.remote_closeall else None,
             "remote_cover": self.data.settings.remote_cover,
             "cover": {**self.cover_state, "emergency_at": self.emergency_at} if self.data.settings.remote_cover else None,
         }
@@ -584,7 +612,7 @@ class Service:
         """PC 상태(켜짐·예약)를 apphelper-status 브랜치에 올린다. 바뀌었거나 60초가 지났을 때만."""
         from .core.remote import STATUS_BIN, STATUS_BRANCH, encrypt_json
         s = self.data.settings
-        if not (s.remote_power or s.remote_macro or s.remote_login or s.remote_cover):
+        if not (s.remote_power or s.remote_macro or s.remote_login or s.remote_cover or s.remote_closeall):
             return False
         publisher = self._publisher()
         if publisher is None:
@@ -601,7 +629,7 @@ class Service:
     def go_offline(self, timeout: float = 6) -> None:
         """앱 종료·PC 종료 직전에 '꺼짐'으로 알린다 (최선 노력, timeout 초 안에)."""
         s = self.data.settings
-        if not ((s.remote_power or s.remote_macro or s.remote_login or s.remote_cover) and s.github_ready):
+        if not ((s.remote_power or s.remote_macro or s.remote_login or s.remote_cover or s.remote_closeall) and s.github_ready):
             return
         t = threading.Thread(target=lambda: self._try(lambda: self.send_status(force=True, online=False)),
                              daemon=True)

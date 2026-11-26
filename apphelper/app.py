@@ -76,6 +76,7 @@ class _Bridge(QObject):
     login_request = Signal(str)
     cover_request = Signal(str)
     net_relogin = Signal()
+    closeall_request = Signal(str)
 
 
 class TrayApp:
@@ -106,6 +107,8 @@ class TrayApp:
         self._bridge.cover_request.connect(lambda rid: self.start_cover(remote_id=rid))
         self.service.on_cover_request = self._bridge.cover_request.emit
         self._bridge.net_relogin.connect(self.start_net_relogin)
+        self._bridge.closeall_request.connect(self.close_all_windows)
+        self.service.on_closeall_request = self._bridge.closeall_request.emit
         self.service.on_net_relogin = self._bridge.net_relogin.emit
         import threading
         self._login_lock = threading.Lock()  # 자동 로그인은 한 번에 하나만 (편집 화면·페이지 동시에 눌러도)
@@ -341,6 +344,26 @@ class TrayApp:
             return
         threading.Thread(target=lambda: self.run_logins(targets, run_id=run_id, by=by),
                          daemon=True, name="apphelper-login").start()
+
+    def close_all_windows(self, request_id: str) -> None:
+        """결과 페이지의 '모든 창 종료': 화면에 떠 있는 프로그램 창에 모두 닫기(X)를 보낸다.
+
+        Apphelper 자신(편집 화면·가리기)과 바탕 화면·작업 표시줄은 건드리지 않는다.
+        """
+        import os
+        if sys.platform != "win32":
+            self.service.set_closeall_state(request_id, None, "Windows 에서만 됩니다")
+            return
+        from .cover.emergency import close_windows
+        keep = {os.getpid()}
+        if self.cover.proc is not None:
+            keep.add(self.cover.proc.pid)
+        try:
+            n = close_windows(keep)
+        except Exception as e:  # noqa: BLE001
+            self.service.set_closeall_state(request_id, None, str(e))
+            return
+        self.service.set_closeall_state(request_id, n)
 
     def start_net_relogin(self) -> None:
         """네트워크가 몇 분째 끊김 → '네트워크가 끊기면 자동 로그인' 항목(예: Genian)을 로그인."""

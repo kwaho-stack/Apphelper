@@ -128,3 +128,36 @@ def test_net_relogin_runs_only_marked_targets(tray, monkeypatch):
     monkeypatch.setattr(threading, "Thread", Now)
     tray.start_net_relogin()
     assert ran == [(["Genian"], "net")]
+
+
+def test_closeall_request_and_result_in_status(tmp_path):
+    gh = FakeGitHub(request={"closeall": {"id": "X1", "at": NOW * 1000}})
+    svc = make(gh, tmp_path, remote_closeall=True)
+    got = []
+    svc.on_closeall_request = got.append
+    svc.check_remote()
+    svc.check_remote()
+    assert got == ["X1"]
+    svc.set_closeall_state("X1", 4)
+    assert svc.send_status() is True
+    st = json.loads(last_tree(gh)[1]["status.json"])
+    assert st["remote_closeall"] and st["closeall"]["count"] == 4 and st["closeall"]["request"] == "X1"
+    gh.request = {"closeall": {"id": "X2", "at": (NOW - 600) * 1000}}
+    svc.check_remote()
+    assert got == ["X1"]                                    # 오래된 요청은 무시
+    off = make(FakeGitHub(request={"closeall": {"id": "X3", "at": NOW * 1000}}), tmp_path)
+    off.on_closeall_request = got.append
+    off.check_remote()
+    assert got == ["X1"]                                    # 허용이 꺼져 있으면 안 함
+
+
+def test_app_close_all_windows_keeps_itself(tray, monkeypatch):
+    import os
+    import apphelper.app as appmod
+    import apphelper.cover.emergency as em
+    seen, results = [], []
+    monkeypatch.setattr(appmod.sys, "platform", "win32")
+    monkeypatch.setattr(em, "close_windows", lambda keep: seen.append(set(keep)) or 5)
+    monkeypatch.setattr(tray.service, "set_closeall_state", lambda *a: results.append(a))
+    tray.close_all_windows("X1")
+    assert seen == [{os.getpid()}] and results == [("X1", 5)]

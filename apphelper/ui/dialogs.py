@@ -504,6 +504,11 @@ class SettingsDialog(QDialog):
         self.remote_cover.setToolTip("켜면 페이지의 'PC 화면' 탭에서 화면을 가릴 수 있습니다. 푸는 것은 PC 에서 검은 화면 비밀번호로만.\n"
                                      "검은 화면 비밀번호를 PC 에서 먼저 정해 두어야 합니다.")
         form.addRow("", self.remote_cover)
+        self.remote_closeall = QCheckBox("결과 페이지에서 '모든 창 종료' 허용")
+        self.remote_closeall.setChecked(settings.remote_closeall)
+        self.remote_closeall.setToolTip("켜면 페이지의 'PC 화면' 탭에서 화면에 떠 있는 프로그램 창을 모두 닫기(X)로 종료할 수 있습니다.\n"
+                                        "Apphelper 자신과 바탕 화면·작업 표시줄은 건드리지 않습니다.")
+        form.addRow("", self.remote_closeall)
 
         test = self.test_btn = QPushButton("결과 페이지 지금 갱신")
         test.clicked.connect(self._test)
@@ -552,6 +557,7 @@ class SettingsDialog(QDialog):
         s.remote_macro = self.remote_macro.isChecked()
         s.remote_login = self.remote_login.isChecked()
         s.remote_cover = self.remote_cover.isChecked()
+        s.remote_closeall = self.remote_closeall.isChecked()
         return s
 
     def _test(self) -> None:
