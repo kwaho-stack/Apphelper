@@ -499,6 +499,11 @@ class SettingsDialog(QDialog):
         self.remote_login.setToolTip("켜면 페이지의 '전체 자동 로그인' 버튼으로 이 PC 에서 자동 로그인을 실행하고,\n"
                                      "항목별 진행 상황(로그인 중·완료)을 페이지에 알립니다.")
         form.addRow("", self.remote_login)
+        self.remote_cover = QCheckBox("결과 페이지에서 화면 가리기 허용 (가리기 상태도 페이지에 표시)")
+        self.remote_cover.setChecked(settings.remote_cover)
+        self.remote_cover.setToolTip("켜면 페이지의 'PC 화면' 탭에서 화면을 가릴 수 있습니다. 푸는 것은 PC 에서 검은 화면 비밀번호로만.\n"
+                                     "검은 화면 비밀번호를 PC 에서 먼저 정해 두어야 합니다.")
+        form.addRow("", self.remote_cover)
 
         test = self.test_btn = QPushButton("결과 페이지 지금 갱신")
         test.clicked.connect(self._test)
@@ -546,6 +551,7 @@ class SettingsDialog(QDialog):
         s.remote_power = self.remote_power.isChecked()
         s.remote_macro = self.remote_macro.isChecked()
         s.remote_login = self.remote_login.isChecked()
+        s.remote_cover = self.remote_cover.isChecked()
         return s
 
     def _test(self) -> None:

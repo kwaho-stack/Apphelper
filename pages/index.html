@@ -248,6 +248,15 @@
     </section>
 
     <section data-panel="screen">
+      <!-- 화면 가리기 (PC 앱 설정에서 '결과 페이지에서 화면 가리기 허용'을 켜야 함) -->
+      <div class="card pad" style="margin-top:10px">
+        <div class="row" style="justify-content:space-between">
+          <div class="pc off" id="cvState"><span class="dot"></span><span>화면 가리기 상태 확인 중…</span></div>
+          <button class="btn primary" type="button" id="cvBtn" disabled>화면 가리기</button>
+        </div>
+        <div class="sub" id="cvSub"></div>
+        <p class="status" id="cvMsg"></p>
+      </div>
       <div class="card pad" style="margin-top:10px">
         <div class="row"><button class="btn primary" id="shotBtn" type="button">지금 화면 보기</button></div>
         <p class="status" id="status" role="status" aria-live="polite"></p>
@@ -695,7 +704,8 @@
         renderPower();
         renderMacroCtl();
         renderLogin();
-        var busy = pendingPower || pendingMacro.length || pendingLogin || loginRunning();
+        renderCover();
+        var busy = pendingPower || pendingMacro.length || pendingLogin || pendingCover || loginRunning();
         powerTimer = setTimeout(pollPower, busy ? 3000 : 10000);  // 명령을 보낸 뒤·진행 중에는 자주 확인
       });
   }
@@ -827,7 +837,8 @@
     else if (loginRunning()) $("lgMsg").textContent = "위에서부터 하나씩 진행합니다.";
     var list = $("lgList");
     if (!lg || !lg.items) return;
-    $("lgTitle").textContent = "진행 상황 · " + (lg.started || "") + (lg.by === "page" ? " (페이지에서 실행)" : " (PC 에서 실행)");
+    var BY = { page: " (페이지에서 실행)", app: " (PC 에서 실행)", net: " (네트워크 끊김을 감지해 PC 가 스스로 실행)" };
+    $("lgTitle").textContent = "진행 상황 · " + (lg.started || "") + (BY[lg.by] || "");
     list.textContent = "";
     if (!lg.items.length) list.appendChild(el("li", "empty", lg.error || "항목 없음"));
     lg.items.forEach(function (it, i) {
@@ -847,6 +858,42 @@
     sendRequest("login", { id: id, at: Date.now() })
       .then(function () { pendingLogin = id; renderLogin(); pollPower(); })
       .catch(function (e) { $("lgMsg").textContent = explain(e); });
+  };
+
+  // ------------------------------------------------------------------ 화면 가리기
+  var pendingCover = null;
+
+  function renderCover() {
+    var online = pcOnline("remote_cover") && pcStatus.remote_cover === true && !!pcStatus.cover;
+    var cv = online ? pcStatus.cover : null;
+    if (pendingCover && cv && cv.request === pendingCover) {
+      pendingCover = null;
+      $("cvMsg").textContent = cv.active ? "화면을 가렸습니다." : (cv.error || "가리지 못했습니다.");
+      $("cvMsg").className = "status" + (cv.active ? "" : " err");
+    }
+    var st = $("cvState");
+    st.className = "pc " + (cv && cv.active ? "on" : "off");
+    st.lastChild.textContent = !online
+      ? (pcStatus && pcStatus.remote_cover === false
+          ? "PC 앱 설정에서 '결과 페이지에서 화면 가리기 허용'을 켜야 합니다" : "PC 응답 없음 (꺼져 있거나 허용이 꺼짐)")
+      : cv.active ? "화면 가리기 중" : "화면 가리기 안 함";
+    var sub = [];
+    if (cv && cv.active && cv.since) sub.push(cv.since + " 부터 가림");
+    if (cv && cv.emergency_at) sub.push("⚠ 마지막 입력 비상종료 " + cv.emergency_at);
+    if (cv && !cv.active && cv.error && !pendingCover) sub.push("최근 오류: " + cv.error);
+    $("cvSub").textContent = sub.join(" · ");
+    $("cvBtn").disabled = !online || cv.active || !!pendingCover;
+    if (pendingCover) $("cvMsg").textContent = "전송됨 — PC 가 가리기를 기다리는 중 (보통 10초 안)";
+  }
+
+  $("cvBtn").onclick = function () {
+    if (!confirm("PC 화면을 검게 가릴까요? 푸는 것은 PC 앞에서 검은 화면 비밀번호로만 할 수 있습니다.")) return;
+    var id = randomId();
+    $("cvMsg").textContent = "전송 중…";
+    $("cvMsg").className = "status";
+    sendRequest("cover", { id: id, at: Date.now() })
+      .then(function () { pendingCover = id; renderCover(); pollPower(); })
+      .catch(function (e) { $("cvMsg").textContent = explain(e); $("cvMsg").className = "status err"; });
   };
 
   function sendPower(action, atMs, label) {

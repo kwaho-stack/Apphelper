@@ -38,6 +38,7 @@ class LoginTarget:
     launch_wait: int = 30        # 열고 나서 창을 기다리는 최대 시간(초)
     ready_delay: float = 2.0     # 창이 뜬 뒤 로그인 화면이 준비될 때까지 기다리는 시간(초)
     layout: str = "none"         # 로그인 전 창 배치 (LAYOUTS)
+    net_relogin: bool = False    # 네트워크가 끊기면(예: Genian 인증 풀림) 자동으로 이 항목 로그인
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -64,7 +65,7 @@ class LoginTarget:
 
 def default_targets() -> list[LoginTarget]:
     return [
-        LoginTarget(name="Genian", kind="program"),
+        LoginTarget(name="Genian", kind="program", net_relogin=True),
         LoginTarget(name="웹 사이트", kind="web"),
         LoginTarget(name="AT메신저", kind="program", exe="AtMessenger.exe"),
     ]

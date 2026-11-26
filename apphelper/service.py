@@ -14,7 +14,7 @@ from .core.crash import ScreenBackend
 from .core.messenger import MessengerLog, MessengerMonitor
 from .core.model import AppData, Settings, Slot
 from .core.power import PowerScheduler, parse_command
-from .core.publisher import Publisher, Transport, make_publisher, urllib_transport
+from .core.publisher import HttpError, Publisher, Transport, make_publisher, urllib_transport
 from .core.results import Results
 from .core.runner import run_slot
 from .core.scheduler import Scheduler
@@ -27,6 +27,19 @@ def load_page_template() -> str:
     import sys
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
     return (base / "pages" / "index.html").read_text(encoding="utf-8")
+
+
+def default_net_probe() -> bool:
+    """인터넷(GitHub)에 닿는지. 응답이 오면(상태 코드와 상관없이) True."""
+    import urllib.error
+    import urllib.request
+    try:
+        urllib.request.urlopen(urllib.request.Request("https://github.com", method="HEAD"), timeout=10).close()
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 class Service:
@@ -43,6 +56,7 @@ class Service:
         remote_state_path: Path | None = None,
         clock: Callable[[], float] = time.time,
         window_grabber: Callable | None = None,
+        net_probe: Callable[[], bool] | None = None,
     ):
         self.data = data.clone()
         self.clock = clock
@@ -68,6 +82,17 @@ class Service:
         self.on_login_request: Callable[[str], None] | None = None
         self.login_state: dict | None = None  # {"id", "by", "started", "done", "items": [{name, state, msg}]}
         self._kick = threading.Event()        # 진행 상황이 바뀌면 원격 루프를 바로 깨워 상태를 올린다
+        # 페이지의 '화면 가리기' 요청과 가리기 상태
+        self._last_cover_id = state.get("last_cover_id")
+        self.on_cover_request: Callable[[str], None] | None = None
+        self.cover_state: dict = {"active": False, "since": None, "error": None, "request": None}
+        # 네트워크 끊김 감지 → '네트워크가 끊기면 자동 로그인' 항목(예: Genian) 실행
+        self.net_probe = net_probe or default_net_probe
+        self.on_net_relogin: Callable[[], None] | None = None
+        self._net_fail_since: float | None = None
+        self._net_last_probe = -1e9
+        self._relogin_tries = 0
+        self._relogin_last = -1e9
         # 화면 가리기 입력 비상종료 시각 ("YYYY-MM-DD HH:MM:SS"). 다음 가리기를 시작할 때 지운다.
         self.emergency_at: str | None = state.get("emergency_at")
         self._status_version = -1
@@ -315,6 +340,8 @@ class Service:
         self._save_remote_state()
         self._last_publish = -1e9  # 최소 간격을 기다리지 않고 바로 올린다
         self.request_publish()
+        self._macro_rev += 1
+        self._kick.set()
 
     def clear_emergency(self) -> None:
         if self.emergency_at is None:
@@ -322,6 +349,8 @@ class Service:
         self.emergency_at = None
         self._save_remote_state()
         self.request_publish()
+        self._macro_rev += 1
+        self._kick.set()
 
     # ------------------------------------------------------------ 원격 요청 (스크린샷·전원)
     def _load_remote_state(self) -> dict:
@@ -339,6 +368,7 @@ class Service:
             self.remote_state_path.write_text(json.dumps({"last_power_id": self._last_power_id,
                                                           "done_macro_ids": self._done_macro,
                                                           "last_login_id": self._last_login_id,
+                                                          "last_cover_id": self._last_cover_id,
                                                           "emergency_at": self.emergency_at}),
                                               encoding="utf-8")
         except OSError as e:
@@ -346,22 +376,67 @@ class Service:
 
     def _remote_enabled(self) -> bool:
         s = self.data.settings
-        return s.github_ready and (s.remote_power or s.remote_macro or s.remote_login
+        return s.github_ready and (s.remote_power or s.remote_macro or s.remote_login or s.remote_cover
                                    or (s.remote_screenshot and self.capture_image is not None))
 
     def _remote_loop(self) -> None:
         while not self._stop.is_set():
+            ok = None
             if self._remote_enabled():
                 try:
                     self.check_remote()
+                    ok = True
+                except HttpError as e:  # GitHub 가 답했다 = 네트워크는 됨
+                    ok = True
+                    log.debug("원격 요청 확인 실패: %s", e)
                 except Exception as e:  # noqa: BLE001 - 네트워크 오류로 멈추지 않게
+                    ok = False
                     log.debug("원격 요청 확인 실패: %s", e)
                 try:
                     self.send_status()
                 except Exception as e:  # noqa: BLE001
                     log.debug("PC 상태 갱신 실패: %s", e)
+            elif self._relogin_targets() and self.clock() - self._net_last_probe >= self.NET_PROBE_SECONDS:
+                self._net_last_probe = self.clock()
+                ok = self._safe_probe()
+            if ok is not None:
+                self.net_result(ok)
             self._kick.wait(self.REMOTE_POLL_SECONDS)
             self._kick.clear()
+
+    # ------------------------------------------------------------ 네트워크 끊김 → 자동 로그인
+    NET_PROBE_SECONDS = 60       # 원격 기능을 안 쓸 때 연결 확인 주기
+    NET_RELOGIN_AFTER = 180      # 이만큼 계속 끊기면 자동 로그인 시도
+    NET_RELOGIN_COOLDOWN = 300   # 시도 간격
+    NET_RELOGIN_MAX = 3          # 한 번 끊긴 동안 최대 시도 횟수 (연결되면 다시 0)
+
+    def _safe_probe(self) -> bool:
+        try:
+            return bool(self.net_probe())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _relogin_targets(self) -> list:
+        return [t for t in self.data.logins if t.net_relogin]
+
+    def net_result(self, ok: bool) -> None:
+        """연결 확인 결과. 계속 끊겨 있으면 '네트워크가 끊기면 자동 로그인' 항목을 실행하게 한다."""
+        now = self.clock()
+        if ok:
+            if self._net_fail_since is not None:
+                log.debug("네트워크 다시 연결됨")
+            self._net_fail_since, self._relogin_tries = None, 0
+            return
+        if self._net_fail_since is None:
+            self._net_fail_since = now
+        if (self._relogin_targets() and self.on_net_relogin is not None
+                and now - self._net_fail_since >= self.NET_RELOGIN_AFTER
+                and now - self._relogin_last >= self.NET_RELOGIN_COOLDOWN
+                and self._relogin_tries < self.NET_RELOGIN_MAX):
+            self._relogin_tries += 1
+            self._relogin_last = now
+            log.debug("네트워크가 %d초째 끊김 → 자동 로그인 시도 %d", now - self._net_fail_since, self._relogin_tries)
+            self.on_net_relogin()
 
     def check_remote(self, now_utc: datetime | None = None) -> bool:
         """페이지가 보낸 요청(request.json)을 확인해 처리한다. 스크린샷을 찍었으면 True."""
@@ -374,6 +449,7 @@ class Service:
         self._handle_power(raw.get("power"))
         self._handle_macro(raw.get("macro"))
         self._handle_login(raw.get("login"))
+        self._handle_cover(raw.get("cover"))
         return self._handle_screenshot(raw, now_utc)
 
     def _handle_power(self, cmd) -> None:
@@ -431,6 +507,29 @@ class Service:
         if self.on_login_request is not None:
             self.on_login_request(rid)
 
+    def _handle_cover(self, cmd) -> None:
+        """페이지의 '화면 가리기' 요청 (2분 넘게 지난 요청은 무시)."""
+        if not self.data.settings.remote_cover or not isinstance(cmd, dict) or not cmd.get("id"):
+            return
+        rid = str(cmd["id"])
+        if rid == self._last_cover_id:
+            return
+        self._last_cover_id = rid
+        self._save_remote_state()
+        if self.clock() * 1000 - float(cmd.get("at") or 0) > self.LOGIN_REQUEST_MAX_AGE_MS:
+            return
+        if self.on_cover_request is not None:
+            self.on_cover_request(rid)
+
+    def set_cover_state(self, active: bool, error: str | None = None, request: str | None = None) -> None:
+        """화면 가리기 상태가 바뀌었다 (앱이 알림). 바로 페이지에 올린다."""
+        was = self.cover_state
+        since = was["since"] if (active and was["active"]) else (f"{self.now():%Y-%m-%d %H:%M:%S}" if active else None)
+        self.cover_state = {"active": active, "since": since, "error": error,
+                            "request": request or was.get("request")}
+        self._macro_rev += 1
+        self._kick.set()
+
     def set_login_state(self, state: dict | None) -> None:
         """자동 로그인 진행 상황 (어느 스레드에서나). 바뀌면 바로 페이지에 알린다."""
         self.login_state = state
@@ -477,13 +576,15 @@ class Service:
             "macro_done": self._macro_acked if self.data.settings.remote_macro else [],
             "remote_login": self.data.settings.remote_login,
             "login": self.login_state if self.data.settings.remote_login else None,
+            "remote_cover": self.data.settings.remote_cover,
+            "cover": {**self.cover_state, "emergency_at": self.emergency_at} if self.data.settings.remote_cover else None,
         }
 
     def send_status(self, force: bool = False, online: bool = True) -> bool:
         """PC 상태(켜짐·예약)를 apphelper-status 브랜치에 올린다. 바뀌었거나 60초가 지났을 때만."""
         from .core.remote import STATUS_BIN, STATUS_BRANCH, encrypt_json
         s = self.data.settings
-        if not (s.remote_power or s.remote_macro or s.remote_login):
+        if not (s.remote_power or s.remote_macro or s.remote_login or s.remote_cover):
             return False
         publisher = self._publisher()
         if publisher is None:
@@ -500,7 +601,7 @@ class Service:
     def go_offline(self, timeout: float = 6) -> None:
         """앱 종료·PC 종료 직전에 '꺼짐'으로 알린다 (최선 노력, timeout 초 안에)."""
         s = self.data.settings
-        if not ((s.remote_power or s.remote_macro or s.remote_login) and s.github_ready):
+        if not ((s.remote_power or s.remote_macro or s.remote_login or s.remote_cover) and s.github_ready):
             return
         t = threading.Thread(target=lambda: self._try(lambda: self.send_status(force=True, online=False)),
                              daemon=True)

@@ -154,7 +154,7 @@ def test_tray_power_fire_runs_shutdown_once(app, tmp_path, monkeypatch):
         t._power_tick()
         assert t.warning is not None and t.warning.isVisible()
         t.warning._cancel()
-        t._update_menu()
-        assert not t.cancel_power_action.isVisible()
+        assert t.service.power.state()["scheduled_at"] is None
+        assert [a.text() for a in t.menu.actions() if a.text()] == ["열기", "종료"]  # 트레이는 열기·종료만
     finally:
         t.service.stop()

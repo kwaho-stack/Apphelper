@@ -740,6 +740,10 @@ class LoginPanel(QWidget):
             row.addWidget(w[1])
             row.addWidget(w[2])
         self.enter = QCheckBox("마지막에 Enter 누르기")
+        self.net = QCheckBox("네트워크가 끊기면 자동 로그인 (예: Genian 인증이 풀렸을 때)")
+        self.net.setToolTip("인터넷이 3분 넘게 계속 끊기면 이 항목을 자동으로 로그인합니다.\n"
+                            "5분 간격으로, 한 번 끊긴 동안 최대 3번까지 시도하고, 연결되면 다시 처음부터 셉니다.")
+        self.net.toggled.connect(self._apply)
         from PySide6.QtWidgets import QComboBox
         from ..core.autologin import LAYOUTS
         self.layout_box = QComboBox()
@@ -780,6 +784,7 @@ class LoginPanel(QWidget):
         f.addRow("아이디 칸", idrow)
         f.addRow("비밀번호 칸", pwrow)
         f.addRow("", self.enter)
+        f.addRow("", self.net)
         f.addRow("열고 창 기다리기 (최대)", self.wait)
         f.addRow("창이 뜬 뒤 준비 대기", self.ready)
         f.addRow("", run_one)
@@ -859,6 +864,7 @@ class LoginPanel(QWidget):
         self.id_pos.setText(f"창 기준 ({t.id_x}, {t.id_y})" if (t.id_x or t.id_y) else "지정 안 함 (커서가 있는 칸)")
         self.pw_pos.setText(f"창 기준 ({t.pw_x}, {t.pw_y})" if (t.pw_x or t.pw_y) else "지정 안 함 (아이디 뒤 Tab)")
         self.enter.setChecked(t.press_enter)
+        self.net.setChecked(t.net_relogin)
         self.layout_box.setCurrentIndex(max(0, self.layout_box.findData(t.layout)))
         self.wait.setValue(t.launch_wait)
         self.ready.setValue(t.ready_delay)
@@ -879,6 +885,7 @@ class LoginPanel(QWidget):
         t.url = self.url.text().strip()
         t.user = self.user.text()
         t.press_enter = self.enter.isChecked()
+        t.net_relogin = self.net.isChecked()
         t.layout = self.layout_box.currentData() or "none"
         t.launch_wait = self.wait.value()
         t.ready_delay = float(self.ready.value())

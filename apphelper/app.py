@@ -5,7 +5,7 @@ import logging
 import sys
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
@@ -74,6 +74,8 @@ class _Bridge(QObject):
     """서비스(다른 스레드) → 화면 스레드로 일을 넘기는 신호."""
     macro_ops = Signal(object)
     login_request = Signal(str)
+    cover_request = Signal(str)
+    net_relogin = Signal()
 
 
 class TrayApp:
@@ -101,6 +103,10 @@ class TrayApp:
         self.service.on_macro_ops = self._bridge.macro_ops.emit
         self._bridge.login_request.connect(self.start_remote_login)
         self.service.on_login_request = self._bridge.login_request.emit
+        self._bridge.cover_request.connect(lambda rid: self.start_cover(remote_id=rid))
+        self.service.on_cover_request = self._bridge.cover_request.emit
+        self._bridge.net_relogin.connect(self.start_net_relogin)
+        self.service.on_net_relogin = self._bridge.net_relogin.emit
         import threading
         self._login_lock = threading.Lock()  # 자동 로그인은 한 번에 하나만 (편집 화면·페이지 동시에 눌러도)
         self.warning = None
@@ -113,15 +119,9 @@ class TrayApp:
 
         self.tray = QSystemTrayIcon(make_icon(self.service.paused))
         self.tray.setToolTip("Apphelper")
+        # 트레이 메뉴는 '열기'와 '종료'만. 나머지(매크로 켜기/끄기, 프로필, 예약 취소)는 편집 화면에서 한다.
         menu = QMenu()
-        self.toggle_action = QAction(menu)
-        self.toggle_action.triggered.connect(self.toggle_running)
-        menu.addAction(self.toggle_action)
-        self.profile_menu = menu.addMenu("프로필")
-        self.profile_menu.aboutToShow.connect(self._build_profile_menu)
-        menu.addAction("편집 화면 열기", self.open_editor)
-        self.cancel_power_action = menu.addAction("종료/다시시작 예약 취소", self.service.power.cancel)
-        menu.aboutToShow.connect(self._update_menu)
+        menu.addAction("열기", self.open_editor)
         menu.addSeparator()
         menu.addAction("종료", self.quit)
         self.menu = menu
@@ -170,9 +170,6 @@ class TrayApp:
         self.app.quit()
 
     # ------------------------------------------------------------ PC 전원
-    def _update_menu(self):
-        self.cancel_power_action.setVisible(self.service.power.state()["scheduled_at"] is not None)
-
     def power_now(self, mode: str) -> None:
         self.service.power.now_action(mode)
         self._power_tick()
@@ -214,19 +211,9 @@ class TrayApp:
 
     def _update_tray(self):
         paused = self.service.paused
-        self.toggle_action.setText("실행" if paused else "일시정지")
         self.tray.setIcon(make_icon(paused))
         # 트레이 툴팁에는 실행 시각이나 결과 같은 정보를 보이지 않는다 (편집 화면에서만 확인)
         self.tray.setToolTip("Apphelper")
-
-    def _build_profile_menu(self):
-        self.profile_menu.clear()
-        data = self.editor.data if self.editor else self.data
-        for name in data.profile_names():
-            act = self.profile_menu.addAction(name)
-            act.setCheckable(True)
-            act.setChecked(name == data.profile)
-            act.triggered.connect(lambda _=False, n=name: self.switch_profile(n))
 
     def switch_profile(self, name: str):
         """트레이에서 프로필 전환. 편집 화면이 있으면 그쪽 데이터를 기준으로 바꾼다."""
@@ -337,19 +324,28 @@ class TrayApp:
         finally:
             self._login_lock.release()
 
-    def start_remote_login(self, run_id: str) -> None:
-        """결과 페이지의 '전체 자동 로그인' (화면 스레드에서 불림): 체크된 항목을 작업 스레드에서 실행."""
+    def start_remote_login(self, run_id: str, by: str = "page") -> None:
+        """결과 페이지의 '전체 자동 로그인'(체크된 항목) 또는 네트워크 끊김 감지(by="net": 그 옵션을 켠 항목).
+
+        화면 스레드에서 불리고, 실제 로그인은 작업 스레드에서 한다.
+        """
         import threading
         if self.editor:
             self.editor.flush()
         data = self.editor.data if self.editor else self.data
-        targets = [type(t).from_dict(t.to_dict()) for t in data.logins if t.enabled]
+        pick = (lambda t: t.net_relogin) if by == "net" else (lambda t: t.enabled)
+        targets = [type(t).from_dict(t.to_dict()) for t in data.logins if pick(t)]
         if not targets:
-            self.service.set_login_state({"id": run_id, "by": "page", "done": True, "items": [],
+            self.service.set_login_state({"id": run_id, "by": by, "done": True, "items": [],
                                           "error": "체크된 자동 로그인 항목이 없습니다"})
             return
-        threading.Thread(target=lambda: self.run_logins(targets, run_id=run_id, by="page"),
+        threading.Thread(target=lambda: self.run_logins(targets, run_id=run_id, by=by),
                          daemon=True, name="apphelper-login").start()
+
+    def start_net_relogin(self) -> None:
+        """네트워크가 몇 분째 끊김 → '네트워크가 끊기면 자동 로그인' 항목(예: Genian)을 로그인."""
+        import time as _time
+        self.start_remote_login(f"net-{int(_time.time() * 1000)}", by="net")
 
     def toggle_running(self):
         if self.editor:
@@ -398,16 +394,22 @@ class TrayApp:
         return True
 
     # ------------------------------------------------------------ 화면 가리기
-    def start_cover(self) -> None:
+    def start_cover(self, remote_id: str | None = None) -> None:
         """편집 창을 트레이로 숨기고 화면을 검게 가린다.
 
         키를 누르거나 클릭한 뒤 5초 안에 검은 화면 비밀번호를 치면 풀리고, 못 치면 입력 비상종료
         (창 닫기 → 메신저 끄기 → PC 잠금 → 가리기 해제). 비상종료는 결과 페이지에 시각과 함께 표시한다.
         """
         if self.cover.active:
+            if remote_id:
+                self.service.set_cover_state(True, request=remote_id)
             return
         verifier = self.cover_password.verifier()
         if verifier is None:  # 처음이면 검은 화면 비밀번호부터 정한다
+            if remote_id:  # 페이지에서 요청: PC 에 창을 띄우지 않고 이유만 알린다
+                self.service.set_cover_state(False, error="PC 에서 검은 화면 비밀번호를 먼저 정해야 합니다",
+                                             request=remote_id)
+                return
             if not self.change_cover_password(self.editor):
                 return
             verifier = self.cover_password.verifier()
@@ -418,7 +420,10 @@ class TrayApp:
         try:
             self.cover.start(verifier)
         except OSError as e:
+            self.service.set_cover_state(False, error=f"시작하지 못함: {e}", request=remote_id)
             self._cover_failed(f"화면 가리기를 시작하지 못했습니다: {e}")
+            return
+        self.service.set_cover_state(True, request=remote_id)
 
     def _cover_tick(self) -> None:
         from .cover import EXIT_EMERGENCY, EXIT_STOPPED, EXIT_UNLOCKED, EXIT_UNSUPPORTED
@@ -427,6 +432,8 @@ class TrayApp:
             return
         from .cover import cursor
         cursor.restore()  # 가리기 프로세스가 강제 종료돼 커서를 못 되돌렸을 수도 있으니 앱도 한 번 더
+        failed = code not in (EXIT_UNLOCKED, EXIT_STOPPED, EXIT_EMERGENCY)
+        self.service.set_cover_state(False, error=f"가리기가 끝남 (코드 {code})" if failed else None)
         if code in (EXIT_UNLOCKED, EXIT_STOPPED):
             return  # 풀린 뒤에는 트레이에만 있는다 (편집 화면은 평소처럼 트레이에서 비밀번호로 연다)
         if code == EXIT_EMERGENCY:
