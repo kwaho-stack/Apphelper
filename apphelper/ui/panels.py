@@ -639,6 +639,23 @@ class PowerWarning(QWidget):
 
 # ------------------------------------------------------------------ 자동 로그인
 
+def arrange_now(target) -> str:
+    """지금 그 창을 찾아 설정한 배치로 맞춘다 (칸 좌표를 따기 전에). 결과 설명. 테스트에서 바꿔 끼운다."""
+    import sys
+    if sys.platform != "win32":
+        return "Windows 에서만 됩니다"
+    from ..autologin_win import WinLoginOps
+    from ..core.autologin import LAYOUTS
+    ops = WinLoginOps(None)
+    w = ops.find(target)
+    if w is None:
+        return "창을 찾지 못했습니다. 프로그램(사이트)을 먼저 열어 주세요"
+    w = ops.focus(w)
+    if target.layout != "none":
+        ops.arrange(w, target.layout)
+    return f"창을 '{LAYOUTS[target.layout]}' 로 맞췄습니다. 이제 칸 좌표를 따세요"
+
+
 def window_info_at(x: int, y: int):
     """화면 (x, y) 의 창 정보 dict (exe, title, x, y …). Windows 가 아니면 None. 테스트에서 바꿔 끼운다."""
     import sys
@@ -651,7 +668,7 @@ def window_info_at(x: int, y: int):
 class LoginPanel(QWidget):
     """자동 로그인 항목 설정과 실행 버튼. 항목은 editor.data.logins 에 바로 반영·자동 저장된다."""
 
-    def __init__(self, editor: "EditorWindow", on_login: Callable[[list], str]):
+    def __init__(self, editor: "EditorWindow", on_login: Callable[..., str]):
         from PySide6.QtWidgets import QDoubleSpinBox, QListWidget, QListWidgetItem, QPlainTextEdit  # noqa: F401
         super().__init__()
         self.editor = editor
@@ -723,6 +740,20 @@ class LoginPanel(QWidget):
             row.addWidget(w[1])
             row.addWidget(w[2])
         self.enter = QCheckBox("마지막에 Enter 누르기")
+        from PySide6.QtWidgets import QComboBox
+        from ..core.autologin import LAYOUTS
+        self.layout_box = QComboBox()
+        for key, label in LAYOUTS.items():
+            self.layout_box.addItem(label, key)
+        self.layout_box.setToolTip("로그인 전에 창을 이 위치·크기로 맞춥니다. 창이 매번 다른 크기로 떠도 칸 위치가 같아집니다.\n"
+                                   "칸 좌표는 '지금 배치'로 맞춘 상태에서 따세요.")
+        self.layout_box.currentIndexChanged.connect(self._apply)
+        arrange_btn = QPushButton("지금 배치")
+        arrange_btn.setToolTip("열려 있는 그 창을 지금 바로 설정한 배치로 맞춥니다 (칸 좌표를 따기 전에).")
+        arrange_btn.clicked.connect(self._arrange_now)
+        lrow2 = QHBoxLayout()
+        lrow2.addWidget(self.layout_box, 1)
+        lrow2.addWidget(arrange_btn)
         self.wait = _spin(1, 600, " 초")
         self.ready = QDoubleSpinBox()
         self.ready.setRange(0, 60)
@@ -743,6 +774,7 @@ class LoginPanel(QWidget):
         f.addRow(self.path_label, prow)
         self.url_label = QLabel("웹 주소")
         f.addRow(self.url_label, self.url)
+        f.addRow("로그인 전 창 배치", lrow2)
         f.addRow("아이디", self.user)
         f.addRow("비밀번호", self.pw)
         f.addRow("아이디 칸", idrow)
@@ -827,6 +859,7 @@ class LoginPanel(QWidget):
         self.id_pos.setText(f"창 기준 ({t.id_x}, {t.id_y})" if (t.id_x or t.id_y) else "지정 안 함 (커서가 있는 칸)")
         self.pw_pos.setText(f"창 기준 ({t.pw_x}, {t.pw_y})" if (t.pw_x or t.pw_y) else "지정 안 함 (아이디 뒤 Tab)")
         self.enter.setChecked(t.press_enter)
+        self.layout_box.setCurrentIndex(max(0, self.layout_box.findData(t.layout)))
         self.wait.setValue(t.launch_wait)
         self.ready.setValue(t.ready_delay)
         self.found.setText("")
@@ -846,6 +879,7 @@ class LoginPanel(QWidget):
         t.url = self.url.text().strip()
         t.user = self.user.text()
         t.press_enter = self.enter.isChecked()
+        t.layout = self.layout_box.currentData() or "none"
         t.launch_wait = self.wait.value()
         t.ready_delay = float(self.ready.value())
         item = self.list.currentItem()
@@ -942,6 +976,13 @@ class LoginPanel(QWidget):
         self._select(self.list.currentRow())
         self._changed()
 
+    def _arrange_now(self):
+        t = self.current
+        if t is None:
+            return
+        self._apply()
+        self.found.setText(arrange_now(t))
+
     def _clear_field(self, which: str):
         t = self.current
         if t is None:
@@ -965,11 +1006,30 @@ class LoginPanel(QWidget):
         self.run_all_btn.setEnabled(False)
         self.run_one_btn.setEnabled(False)
         self.result.setPlainText("실행 중… " + ", ".join(t.name for t in targets))
+        import queue
         from .dialogs import run_in_background
         snapshot = [type(t).from_dict(t.to_dict()) for t in targets]  # 실행 중 편집해도 섞이지 않게
-        run_in_background(lambda: self.on_login(snapshot), self._done)
+        self._progress = queue.SimpleQueue()
+        run_in_background(lambda: self.on_login(snapshot, self._progress.put), self._done)
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self._poll_progress)
+        self._poll_timer.start(150)
+
+    def _poll_progress(self):
+        """작업 스레드가 넘긴 진행 상황(1. Genian — 로그인 중 …)을 차례로 보여 준다."""
+        import queue
+        text = None
+        while True:
+            try:
+                text = self._progress.get_nowait()
+            except queue.Empty:
+                break
+        if text is not None and self._busy:
+            self.result.setPlainText(text)
 
     def _done(self, text: str):
+        if getattr(self, "_poll_timer", None) is not None:
+            self._poll_timer.stop()
         self._busy = False
         self.run_all_btn.setEnabled(True)
         self.run_one_btn.setEnabled(True)

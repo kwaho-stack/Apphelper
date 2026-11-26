@@ -18,7 +18,15 @@ from .core.autologin import LoginTarget, Win
 INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP, KEYEVENTF_UNICODE = 0x2, 0x4
 VK = {"tab": 0x09, "enter": 0x0D, "ctrl": 0x11, "a": 0x41, "alt": 0x12}
-SW_RESTORE = 9
+SW_RESTORE, SW_MAXIMIZE = 9, 3
+SWP_NOZORDER, SWP_NOACTIVATE = 0x4, 0x10
+MONITOR_DEFAULTTONEAREST = 2
+DWMWA_EXTENDED_FRAME_BOUNDS = 9
+
+
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT), ("rcWork", wintypes.RECT),
+                ("dwFlags", wintypes.DWORD)]
 
 
 class KEYBDINPUT(ctypes.Structure):
@@ -82,10 +90,53 @@ class WinLoginOps:
         self.user32.SetForegroundWindow(w.hwnd)
         self.user32.BringWindowToTop(w.hwnd)
         time.sleep(0.2)
+        return self._current(w)
+
+    def _current(self, w: Win) -> Win:
         for info in wincapture.list_windows():
             if info["hwnd"] == w.hwnd:
                 return Win(w.hwnd, info["x"], info["y"], info["iconic"])
         return w
+
+    def arrange(self, w: Win, layout: str) -> Win:
+        """Win+→ / Win+← 처럼 화면(작업 영역)의 오른쪽·왼쪽 절반, 또는 최대화. 늘 같은 결과가 되도록 직접 배치한다."""
+        u = self.user32
+        u.IsZoomed.argtypes = [wintypes.HWND]
+        u.MonitorFromWindow.restype = wintypes.HANDLE
+        u.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+        u.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MONITORINFO)]
+        u.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+        u.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                   ctypes.c_int, wintypes.UINT]
+        if layout == "max":
+            u.ShowWindow(w.hwnd, SW_MAXIMIZE)
+            time.sleep(0.3)
+            return self._current(w)
+        if u.IsZoomed(w.hwnd):
+            u.ShowWindow(w.hwnd, SW_RESTORE)
+            time.sleep(0.2)
+        mi = MONITORINFO()
+        mi.cbSize = ctypes.sizeof(MONITORINFO)
+        u.GetMonitorInfoW(u.MonitorFromWindow(w.hwnd, MONITOR_DEFAULTTONEAREST), ctypes.byref(mi))
+        work = mi.rcWork
+        half = (work.right - work.left) // 2
+        x = work.left + (half if layout == "right" else 0)
+        # Windows 10/11 창에는 보이지 않는 테두리가 있어, 보이는 부분이 딱 절반이 되도록 보정한다
+        rect, frame = wintypes.RECT(), wintypes.RECT()
+        u.GetWindowRect(w.hwnd, ctypes.byref(rect))
+        dl = dt = dr = db = 0
+        try:
+            dwm = ctypes.WinDLL("dwmapi")
+            if dwm.DwmGetWindowAttribute(w.hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(frame),
+                                         ctypes.sizeof(frame)) == 0:
+                dl, dt = frame.left - rect.left, frame.top - rect.top
+                dr, db = rect.right - frame.right, rect.bottom - frame.bottom
+        except OSError:
+            pass
+        u.SetWindowPos(w.hwnd, None, x - dl, work.top - dt, half + dl + dr, (work.bottom - work.top) + dt + db,
+                       SWP_NOZORDER | SWP_NOACTIVATE)
+        time.sleep(0.3)
+        return self._current(w)
 
     # 입력
     def click(self, x: int, y: int) -> None:

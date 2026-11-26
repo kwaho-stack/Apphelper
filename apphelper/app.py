@@ -20,6 +20,13 @@ INSTANCE_NAME = "apphelper-single-instance"
 log = logging.getLogger("apphelper")
 
 
+def login_lines(items: list[dict]) -> str:
+    """자동 로그인 진행 상황 → '1. Genian — 로그인 중…' 줄들."""
+    icon = {"대기": "⏳", "로그인 중": "▶", "완료": "✅", "실패": "❌"}
+    return "\n".join(f"{i + 1}. {it['name']} — {icon.get(it['state'], '')} {it['state']}"
+                     + (f" ({it['msg']})" if it.get("msg") else "") for i, it in enumerate(items))
+
+
 def _window_grabber():
     """메신저 창 직접 캡처 (Windows 에서만)."""
     if sys.platform != "win32":
@@ -66,6 +73,7 @@ def make_icon(paused: bool) -> QIcon:
 class _Bridge(QObject):
     """서비스(다른 스레드) → 화면 스레드로 일을 넘기는 신호."""
     macro_ops = Signal(object)
+    login_request = Signal(str)
 
 
 class TrayApp:
@@ -91,6 +99,10 @@ class TrayApp:
         self._bridge = _Bridge()
         self._bridge.macro_ops.connect(self.apply_macro_ops)
         self.service.on_macro_ops = self._bridge.macro_ops.emit
+        self._bridge.login_request.connect(self.start_remote_login)
+        self.service.on_login_request = self._bridge.login_request.emit
+        import threading
+        self._login_lock = threading.Lock()  # 자동 로그인은 한 번에 하나만 (편집 화면·페이지 동시에 눌러도)
         self.warning = None
         # 화면 가리기: 전용 비밀번호(data/cover.json 에 검증값만), 가리기 프로세스 제어
         from .cover import CoverController
@@ -276,21 +288,68 @@ class TrayApp:
             self.set_running(running)
         self.service.macro_applied([str(op.get("id")) for op in ops])
 
-    def run_logins(self, targets: list) -> str:
-        """자동 로그인 (작업 스레드에서 불림). 매크로 클릭과 겹치지 않게 실행 잠금을 잡는다."""
+    def _login_ops(self):
         if sys.platform != "win32":
-            return "자동 로그인은 Windows 에서만 됩니다."
+            return None
         from .autologin_win import WinLoginOps
+        return WinLoginOps(self.backend)
+
+    def run_logins(self, targets: list, progress=None, run_id: str | None = None, by: str = "app") -> str:
+        """자동 로그인 (작업 스레드에서 불림). 위에서부터 하나씩: 로그인 중 → 완료/실패.
+
+        진행 상황은 progress(줄 목록) 로 편집 화면에, service.set_login_state 로 결과 페이지에 알린다.
+        매크로 클릭과 겹치지 않게 실행 잠금을 잡는다.
+        """
+        import time as _time
+        from datetime import datetime
         from .core.autologin import run_login
-        ops = WinLoginOps(self.backend)
-        lines = []
-        with self.service._run_lock:
-            for t in targets:
-                try:
-                    lines.append(run_login(t, ops).line())
-                except Exception as e:  # noqa: BLE001 - 한 항목이 실패해도 다음 항목은 한다
-                    lines.append(f"❌ {t.name}: 오류 {e}")
-        return "\n".join(lines)
+        if not self._login_lock.acquire(blocking=False):
+            return "이미 자동 로그인을 실행 중입니다."
+        try:
+            ops = self._login_ops()
+            items = [{"name": t.name or f"{i + 1}번", "state": "대기", "msg": ""} for i, t in enumerate(targets)]
+            state = {"id": run_id or f"app-{int(_time.time() * 1000)}", "by": by,
+                     "started": f"{datetime.now():%Y-%m-%d %H:%M:%S}", "done": False, "items": items}
+
+            def report():
+                self.service.set_login_state({**state, "items": [dict(i) for i in items]})
+                if progress is not None:
+                    progress(login_lines(items))
+
+            report()
+            with self.service._run_lock:
+                for t, item in zip(targets, items):
+                    item["state"] = "로그인 중"
+                    report()
+                    if ops is None:
+                        ok, msg = False, "자동 로그인은 Windows 에서만 됩니다"
+                    else:
+                        try:
+                            r = run_login(t, ops)
+                            ok, msg = r.ok, r.message
+                        except Exception as e:  # noqa: BLE001 - 한 항목이 실패해도 다음 항목은 한다
+                            ok, msg = False, f"오류 {e}"
+                    item["state"], item["msg"] = ("완료" if ok else "실패"), msg
+                    report()
+            state["done"] = True
+            report()
+            return login_lines(items)
+        finally:
+            self._login_lock.release()
+
+    def start_remote_login(self, run_id: str) -> None:
+        """결과 페이지의 '전체 자동 로그인' (화면 스레드에서 불림): 체크된 항목을 작업 스레드에서 실행."""
+        import threading
+        if self.editor:
+            self.editor.flush()
+        data = self.editor.data if self.editor else self.data
+        targets = [type(t).from_dict(t.to_dict()) for t in data.logins if t.enabled]
+        if not targets:
+            self.service.set_login_state({"id": run_id, "by": "page", "done": True, "items": [],
+                                          "error": "체크된 자동 로그인 항목이 없습니다"})
+            return
+        threading.Thread(target=lambda: self.run_logins(targets, run_id=run_id, by="page"),
+                         daemon=True, name="apphelper-login").start()
 
     def toggle_running(self):
         if self.editor:

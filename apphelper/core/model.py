@@ -163,6 +163,7 @@ class Settings:
     remote_power: bool = False       # 결과 페이지에서 PC 종료/다시시작 제어 허용 (기본 꺼짐)
     power_force: bool = False        # 강제 종료/다시시작 (저장 안 된 프로그램도 닫음)
     remote_macro: bool = False       # 결과 페이지에서 매크로 켜기/끄기·프로필·시간대 조정 허용 (기본 꺼짐)
+    remote_login: bool = False       # 결과 페이지에서 전체 자동 로그인 실행 허용 (기본 꺼짐)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

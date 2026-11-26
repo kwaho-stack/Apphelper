@@ -24,6 +24,10 @@ class FakeOps:
         self.log.append("focus")
         return Win(w.hwnd, 300, 400)      # 앞으로 가져온 뒤의 실제 위치
 
+    def arrange(self, w, layout):
+        self.log.append(("arrange", layout))
+        return Win(w.hwnd, 960, 0)        # 오른쪽 절반으로 옮긴 뒤의 위치
+
     def click(self, x, y):
         self.log.append(("click", x, y))
 
@@ -95,7 +99,7 @@ def test_login_panel_edit_pick_and_run(tmp_path, monkeypatch):
     from apphelper.ui.editor import EditorWindow
     saved, runs = [], []
     ed = EditorWindow(AppData(), DummyBackend(), saved.append, lambda s: "", lambda: AppData(),
-                      on_login=lambda ts: runs.append([t.name for t in ts]) or "✅ 완료")
+                      on_login=lambda ts, progress=None: runs.append([t.name for t in ts]) or "✅ 완료")
     lp = ed.login_panel
     assert lp is not None and ed.tabs.tabText(ed.tabs.count() - 1) == "자동 로그인"
     assert lp.list.count() == 3
@@ -126,3 +130,60 @@ def test_login_panel_edit_pick_and_run(tmp_path, monkeypatch):
     ed.flush()
     assert saved[-1].logins[2].user == "kim"
     ed.close()
+
+
+def test_layout_before_typing_uses_arranged_position():
+    ops = FakeOps(start_open=True)
+    r = run_login(target(layout="right", id_x=10, id_y=20), ops)
+    assert r.ok and ops.log[:2] == ["focus", ("arrange", "right")] and ("click", 970, 20) in ops.log
+    assert LoginTarget.from_dict({"layout": "weird"}).layout == "none"
+
+
+def test_app_runs_in_order_and_reports_progress(tmp_path, monkeypatch):
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    import apphelper.app as appmod
+    from apphelper.core.model import Store
+    monkeypatch.setattr(appmod, "Store", lambda: Store(tmp_path / "data"))
+    tray = appmod.TrayApp(app)
+    states, lines = [], []
+    monkeypatch.setattr(tray.service, "set_login_state", lambda st: states.append(st))
+    monkeypatch.setattr(tray, "_login_ops", lambda: FakeOps(start_open=True))
+    a, b = target(), target()
+    a.name, b.name = "Genian", "AT"
+    b.user = ""                                          # 두 번째는 설정이 빠져 실패
+    text = tray.run_logins([a, b], progress=lines.append, run_id="r1", by="page")
+    seq = [[i["state"] for i in st["items"]] for st in states]
+    assert seq[0] == ["대기", "대기"] and ["로그인 중", "대기"] in seq and ["완료", "로그인 중"] in seq
+    assert seq[-1] == ["완료", "실패"] and states[-1]["done"] and states[-1]["id"] == "r1"
+    assert "1. Genian — ✅ 완료" in text and "2. AT — ❌ 실패" in text and lines[-1] == text
+    tray._login_lock.acquire()
+    assert "이미" in tray.run_logins([a])                # 동시에 두 번은 안 돈다
+    tray._login_lock.release()
+    tray.service.stop()
+
+
+def test_service_login_request(tmp_path):
+    from tests.test_results_publisher import FakeGitHub
+    from tests.test_service_remote import NOW, NOW_DT, last_tree
+    import json
+    from apphelper.service import Service
+    from tests.fakes import FakeScreen
+    gh = FakeGitHub(request={"login": {"id": "L1", "at": NOW * 1000}})
+    d = AppData()
+    d.settings.github_owner, d.settings.github_repo, d.settings.github_token = "o", "r", "tok"
+    d.settings.remote_login = True
+    svc = Service(d, FakeScreen(), "", transport=gh, now=lambda: NOW_DT, clock=lambda: NOW,
+                  remote_state_path=tmp_path / "rs.json")
+    got = []
+    svc.on_login_request = got.append
+    svc.check_remote()
+    svc.check_remote()
+    assert got == ["L1"]                                  # 같은 요청은 한 번만
+    svc.set_login_state({"id": "L1", "done": False, "items": [{"name": "G", "state": "로그인 중", "msg": ""}]})
+    assert svc._kick.is_set() and svc.send_status() is True
+    st = json.loads(last_tree(gh)[1]["status.json"])
+    assert st["remote_login"] and st["login"]["items"][0]["state"] == "로그인 중"
+    gh.request = {"login": {"id": "L2", "at": (NOW - 600) * 1000}}
+    svc.check_remote()
+    assert got == ["L1"]                                  # 오래된 요청은 실행하지 않는다

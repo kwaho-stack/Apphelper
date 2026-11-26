@@ -3,7 +3,8 @@
 항목마다:
   1. 이미 열린 창을 찾는다 (실행 파일 이름 + 창 제목에 들어간 글자)
   2. 없으면 지정한 경로로 연다 (웹은 브라우저로 주소를 연다) → 창이 뜰 때까지 기다린다
-  3. 창을 앞으로 가져와 아이디 칸 → 아이디, 비밀번호 칸(없으면 Tab) → 비밀번호, Enter
+  3. 창을 앞으로 가져와 (설정하면 화면 오른쪽 절반 등으로 배치한 뒤) 아이디 칸 → 아이디,
+     비밀번호 칸(없으면 Tab) → 비밀번호, Enter
 좌표는 창 왼쪽 위 기준이라 창이 옮겨져도 된다. 비밀번호는 Windows 계정으로만 풀리게 암호화(DPAPI)해서 저장한다.
 """
 from __future__ import annotations
@@ -14,6 +15,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
 KINDS = {"program": "프로그램", "web": "웹 사이트"}
+# 로그인 전 창 배치 (Win+→ / Win+← 처럼). 배치한 뒤의 창 기준으로 칸 좌표를 쓰므로 창 크기가 늘 같아진다.
+LAYOUTS = {"none": "그대로", "right": "오른쪽 절반 (Win+→)", "left": "왼쪽 절반 (Win+←)", "max": "최대화"}
 
 
 @dataclass
@@ -34,6 +37,7 @@ class LoginTarget:
     press_enter: bool = True
     launch_wait: int = 30        # 열고 나서 창을 기다리는 최대 시간(초)
     ready_delay: float = 2.0     # 창이 뜬 뒤 로그인 화면이 준비될 때까지 기다리는 시간(초)
+    layout: str = "none"         # 로그인 전 창 배치 (LAYOUTS)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -45,6 +49,8 @@ class LoginTarget:
         t = cls(**known)
         if t.kind not in KINDS:
             t.kind = "program"
+        if t.layout not in LAYOUTS:
+            t.layout = "none"
         return t
 
     @property
@@ -128,6 +134,7 @@ class LoginOps(Protocol):
     def find(self, t: LoginTarget) -> Win | None: ...
     def launch(self, t: LoginTarget) -> None: ...
     def focus(self, w: Win) -> Win: ...          # 앞으로 가져오고(최소화면 복원) 지금 위치를 돌려준다
+    def arrange(self, w: Win, layout: str) -> Win: ...  # 창 배치 후 지금 위치
     def click(self, x: int, y: int) -> None: ...
     def select_all(self) -> None: ...
     def type_text(self, text: str) -> None: ...
@@ -188,6 +195,10 @@ def run_login(t: LoginTarget, ops: LoginOps, poll: float = 0.5) -> LoginResult:
         steps.append("열린 창 사용")
     w = ops.focus(w)
     ops.sleep(0.3)
+    if t.layout != "none":
+        w = ops.arrange(w, t.layout)
+        ops.sleep(0.4)
+        steps.append("배치")
     if t.id_x or t.id_y:
         ops.click(w.x + t.id_x, w.y + t.id_y)
         ops.sleep(0.15)

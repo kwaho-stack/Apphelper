@@ -494,6 +494,11 @@ class SettingsDialog(QDialog):
         self.remote_macro.setToolTip("켜면 5초마다 페이지의 명령을 확인하고, 매크로 상태를 페이지에 알립니다.\n"
                                      "같은 토큰을 넣은 브라우저에서만 조정할 수 있습니다.")
         form.addRow("", self.remote_macro)
+        self.remote_login = QCheckBox("결과 페이지에서 전체 자동 로그인 실행 허용")
+        self.remote_login.setChecked(settings.remote_login)
+        self.remote_login.setToolTip("켜면 페이지의 '전체 자동 로그인' 버튼으로 이 PC 에서 자동 로그인을 실행하고,\n"
+                                     "항목별 진행 상황(로그인 중·완료)을 페이지에 알립니다.")
+        form.addRow("", self.remote_login)
 
         test = self.test_btn = QPushButton("결과 페이지 지금 갱신")
         test.clicked.connect(self._test)
@@ -540,6 +545,7 @@ class SettingsDialog(QDialog):
         s.remote_screenshot = self.remote.isChecked()
         s.remote_power = self.remote_power.isChecked()
         s.remote_macro = self.remote_macro.isChecked()
+        s.remote_login = self.remote_login.isChecked()
         return s
 
     def _test(self) -> None:

@@ -88,6 +88,16 @@
   .pc { display: flex; align-items: center; gap: 8px; font-weight: 600; }
   .pc.on { color: var(--ok); }
   .pc.off { color: var(--muted); }
+  .lg-list { list-style: none; margin: 0; padding: 0 0 6px; }
+  .lg-list li { display: flex; justify-content: space-between; gap: 10px; padding: 10px 16px;
+                border-top: 1px solid var(--line); font-size: 15px; }
+  .lg-list li.empty { color: var(--muted); justify-content: center; }
+  .lg-list .lg-msg { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .lg-st { white-space: nowrap; font-weight: 600; }
+  .lg-st.run { color: var(--accent); }
+  .lg-st.ok { color: var(--ok); }
+  .lg-st.fail { color: var(--fail); }
+  .lg-st.wait { color: var(--muted); }
   .mc-hours { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 6px; margin-top: 8px; }
   .mc-hour { display: flex; align-items: center; gap: 4px; padding: 4px 6px; border: 1px solid var(--line);
              border-radius: 8px; font-size: 13px; }
@@ -136,6 +146,7 @@
       <button type="button" role="tab" data-tab="macro">매크로</button>
       <button type="button" role="tab" data-tab="power">PC 전원</button>
       <button type="button" role="tab" data-tab="screen">PC 화면</button>
+      <button type="button" role="tab" data-tab="login">자동 로그인</button>
     </div>
 
     <!-- 메신저 상태 (기존 mess) -->
@@ -221,6 +232,21 @@
     </section>
 
     <!-- PC 화면 -->
+    <!-- 자동 로그인 (PC 앱 설정에서 '결과 페이지에서 전체 자동 로그인 실행 허용'을 켜야 함) -->
+    <section data-panel="login">
+      <div class="card pad" style="margin-top:10px">
+        <div class="pc off" id="lgState"><span class="dot"></span><span>확인 중…</span></div>
+        <div class="row" style="margin-top:10px">
+          <button class="btn primary grow" type="button" id="lgBtn" disabled>전체 자동 로그인</button>
+        </div>
+        <p class="status" id="lgMsg" style="margin-top:8px"></p>
+      </div>
+      <div class="card" style="margin-top:10px">
+        <div style="font-weight:600;padding:10px 16px 6px" id="lgTitle">진행 상황</div>
+        <ol class="lg-list" id="lgList"><li class="empty">아직 실행 기록이 없습니다</li></ol>
+      </div>
+    </section>
+
     <section data-panel="screen">
       <div class="card pad" style="margin-top:10px">
         <div class="row"><button class="btn primary" id="shotBtn" type="button">지금 화면 보기</button></div>
@@ -668,7 +694,9 @@
       .then(function () {
         renderPower();
         renderMacroCtl();
-        powerTimer = setTimeout(pollPower, pendingPower || pendingMacro.length ? 3000 : 10000);  // 명령을 보낸 뒤에는 자주 확인
+        renderLogin();
+        var busy = pendingPower || pendingMacro.length || pendingLogin || loginRunning();
+        powerTimer = setTimeout(pollPower, busy ? 3000 : 10000);  // 명령을 보낸 뒤·진행 중에는 자주 확인
       });
   }
 
@@ -772,6 +800,54 @@
     }), hours.map(function (h) { return h + "시"; }).join(", ") + " 변경");
   };
   $("mcReset").onclick = function () { mcDirty = {}; mcShown = null; mcMsg(""); renderMacroCtl(); };
+
+  // ------------------------------------------------------------------ 자동 로그인
+  var pendingLogin = null;
+  var LG_CLS = { "대기": "wait", "로그인 중": "run", "완료": "ok", "실패": "fail" };
+  var LG_ICON = { "대기": "⏳ 대기", "로그인 중": "▶ 로그인 중…", "완료": "✅ 완료", "실패": "❌ 실패" };
+
+  function loginRunning() {
+    return !!(pcStatus && pcStatus.login && !pcStatus.login.done);
+  }
+
+  function renderLogin() {
+    var online = pcOnline("remote_login") && pcStatus.remote_login === true;
+    var lg = pcStatus && pcStatus.login;
+    if (pendingLogin && lg && lg.id === pendingLogin) pendingLogin = null;  // PC 가 받아서 시작함
+    var st = $("lgState");
+    st.className = "pc " + (online ? "on" : "off");
+    st.lastChild.textContent = online ? (loginRunning() ? "자동 로그인 진행 중" : "PC 연결됨")
+      : pcStatus && pcStatus.remote_login === false
+        ? "PC 앱 설정에서 '결과 페이지에서 전체 자동 로그인 실행 허용'을 켜야 합니다"
+        : "PC 응답 없음 (꺼져 있거나 허용이 꺼짐)";
+    $("lgBtn").disabled = !online || !!pendingLogin || loginRunning();
+    if (pendingLogin) $("lgMsg").textContent = "전송됨 — PC 가 시작하기를 기다리는 중 (보통 10초 안)";
+    else if (lg && lg.error) $("lgMsg").textContent = lg.error;
+    else if (lg && lg.done) $("lgMsg").textContent = "모두 끝났습니다.";
+    else if (loginRunning()) $("lgMsg").textContent = "위에서부터 하나씩 진행합니다.";
+    var list = $("lgList");
+    if (!lg || !lg.items) return;
+    $("lgTitle").textContent = "진행 상황 · " + (lg.started || "") + (lg.by === "page" ? " (페이지에서 실행)" : " (PC 에서 실행)");
+    list.textContent = "";
+    if (!lg.items.length) list.appendChild(el("li", "empty", lg.error || "항목 없음"));
+    lg.items.forEach(function (it, i) {
+      var li = el("li");
+      var left = el("span", "", (i + 1) + ". " + it.name);
+      if (it.msg) left.appendChild(el("span", "lg-msg", it.msg));
+      li.appendChild(left);
+      li.appendChild(el("span", "lg-st " + (LG_CLS[it.state] || "wait"), LG_ICON[it.state] || it.state));
+      list.appendChild(li);
+    });
+  }
+
+  $("lgBtn").onclick = function () {
+    if (!confirm("PC 에서 체크된 항목을 차례로 자동 로그인할까요? (그동안 PC 의 마우스·키보드가 움직입니다)")) return;
+    var id = randomId();
+    $("lgMsg").textContent = "전송 중…";
+    sendRequest("login", { id: id, at: Date.now() })
+      .then(function () { pendingLogin = id; renderLogin(); pollPower(); })
+      .catch(function (e) { $("lgMsg").textContent = explain(e); });
+  };
 
   function sendPower(action, atMs, label) {
     var cmd = { id: randomId(), action: action, at: atMs || null,
