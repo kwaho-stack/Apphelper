@@ -119,6 +119,11 @@ GitHub Pages 에서 확인하는 Windows 트레이 앱입니다. 이 프로그�
 - **휴대폰 알림 (텔레그램)**: 주 대상이 온라인·자리비움에서 **오프라인**으로 바뀌면 "🔴 홍길동 오프라인 (18:05)"을
   보냅니다(확인불가·미작동 시간에는 안 보냄). 준비: 텔레그램 @BotFather → /newbot → 받은 토큰을 **봇 토큰**에 넣고,
   만든 봇에게 아무 메시지나 보낸 뒤 **찾기** → **시험 알림 보내기**. 토큰은 이 PC 의 data/config.json 에만 저장됩니다.
+  - **보내는 방법 = GitHub 거쳐 보내기**(기본, 회사망에서 텔레그램이 막힌 경우): PC 는 GitHub 에 암호화한 알림 요청만
+    보내고, GitHub Actions(`.github/workflows/notify.yml`)가 텔레그램으로 보냅니다(보통 20~40초 뒤 도착).
+    저장소 **Settings → Secrets and variables → Actions → New repository secret** 에 이름 `TELEGRAM_TOKEN`,
+    값 = 봇 토큰을 한 번 넣어야 합니다. 채팅 ID 는 휴대폰 텔레그램의 **@userinfobot** 이 알려 주는 Id 숫자를 넣고,
+    내 봇에게도 시작(START)을 한 번 눌러 두세요.
 - 감시를 꺼도 결과 페이지에는 꺼지기 전 마지막 상태와 기록이 그대로 보이고, **⏸ 감시 꺼짐** 표시가 붙습니다.
 - 기록: `data\messenger\logs\날짜.txt` (추가 인원은 `others\이름\`), mess 와 같은 형식.
 - **기존 mess 폴더에서 가져오기…**: messenger_status.exe 폴더의 `config.json`(좌표)과 `logs` 를 가져옵니다.

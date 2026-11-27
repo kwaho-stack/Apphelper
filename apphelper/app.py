@@ -489,7 +489,8 @@ class TrayApp:
                                        autostart=self._autostart(), on_cover=self.start_cover,
                                        on_change_cover_password=self.change_cover_password,
                                        on_toggle_running=self.toggle_running,
-                                       on_login=self.run_logins)
+                                       on_login=self.run_logins,
+                                       on_test_notify=lambda text: self.service.notify(text, wait=True))
         self.editor.show()
         self.editor.setWindowState(self.editor.windowState() & ~Qt.WindowState.WindowMinimized)
         self.editor.raise_()

@@ -431,8 +431,10 @@ class EditorWindow(QMainWindow):
                  on_cover: Callable[[], None] | None = None,
                  on_change_cover_password: Callable[[QWidget], bool] | None = None,
                  on_toggle_running: Callable[[], None] | None = None,
-                 on_login: Callable[..., str] | None = None):
+                 on_login: Callable[..., str] | None = None,
+                 on_test_notify: Callable[[str], str] | None = None):
         super().__init__()
+        self._on_test_notify = on_test_notify
         self._on_change_password = on_change_password
         self._on_change_cover_password = on_change_cover_password
         self._on_trial_run = on_trial_run

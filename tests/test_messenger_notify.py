@@ -106,3 +106,26 @@ def test_panel_quiet_and_telegram(tmp_path, monkeypatch):
         time.sleep(0.02)
     assert sent == [("TOK", "12345")]
     ed.close()
+
+
+def test_github_route_dispatches_sealed_message(tmp_path):
+    from pathlib import Path
+    from apphelper.core.telegram import NOTIFY_EVENT, unseal
+    from tests.test_results_publisher import FakeGitHub
+    gh = FakeGitHub()
+    d = AppData()
+    s = d.settings
+    s.github_owner, s.github_repo, s.github_token = "o", "r", "tok"
+    s.telegram_token, s.telegram_chat_id, s.telegram_route = "123:ABC", "987", "github"
+    svc = Service(d, FakeScreen(), "", transport=gh)
+    msg = svc.notify("🔴 홍길동 오프라인 (18:05)", wait=True)
+    assert "GitHub 에 알림 요청 보냄" in msg
+    body, = gh.dispatched
+    assert body["event_type"] == NOTIFY_EVENT and "홍길동" not in str(body) and "987" not in str(body)
+    assert unseal("123:ABC", body["client_payload"]["m"]) == {"chat": "987", "text": "🔴 홍길동 오프라인 (18:05)"}
+    # GitHub Actions 쪽(notify.yml)도 같은 이벤트 이름·같은 키 만들기를 쓴다
+    wf = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "notify.yml").read_text(encoding="utf-8")
+    assert f"types: [{NOTIFY_EVENT}]" in wf and 'b"apphelper-notify-v1", 100_000' in wf
+    assert "secrets.TELEGRAM_TOKEN" in wf and "client_payload.m" in wf
+    svc.data.settings.github_token = ""
+    assert "실패" in svc.notify("x", wait=True)          # GitHub 설정이 없으면 이유를 알려 준다

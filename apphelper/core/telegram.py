@@ -54,3 +54,33 @@ def find_chat_id(token: str) -> str:
         if chat.get("id") is not None:
             return str(chat["id"])
     raise TelegramError("봇에게 받은 메시지가 없습니다. 텔레그램에서 그 봇에게 아무 메시지나 보낸 뒤 다시 누르세요")
+
+
+# ---------------------------------------------------------------- GitHub 거쳐 보내기
+# 회사망에서 텔레그램이 막혀 있으면, PC 는 GitHub 에 '알림 요청'(repository_dispatch)만 보내고
+# GitHub Actions(.github/workflows/notify.yml)가 텔레그램으로 대신 보낸다. 저장소가 공개라서 내용(채팅 ID·글)은
+# 봇 토큰에서 만든 키로 암호화한다. 봇 토큰은 저장소 Secrets 의 TELEGRAM_TOKEN 에 같은 값을 넣어 둔다.
+NOTIFY_EVENT = "apphelper-notify"
+_NOTIFY_SALT = b"apphelper-notify-v1"
+
+
+def notify_key(bot_token: str) -> bytes:
+    import hashlib
+    return hashlib.pbkdf2_hmac("sha256", bot_token.encode("utf-8"), _NOTIFY_SALT, 100_000)
+
+
+def seal(bot_token: str, chat_id: str, text: str) -> str:
+    """{"chat", "text"} 를 AES-256-GCM 으로 암호화한 base64 (nonce 12바이트 + 암호문 + 태그)."""
+    import base64
+    import os
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    nonce = os.urandom(12)
+    body = json.dumps({"chat": chat_id, "text": text}, ensure_ascii=False).encode("utf-8")
+    return base64.b64encode(nonce + AESGCM(notify_key(bot_token)).encrypt(nonce, body, None)).decode("ascii")
+
+
+def unseal(bot_token: str, sealed: str) -> dict:
+    import base64
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    raw = base64.b64decode(sealed)
+    return json.loads(AESGCM(notify_key(bot_token)).decrypt(raw[:12], raw[12:], None))

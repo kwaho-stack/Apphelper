@@ -103,6 +103,9 @@ class FakeGitHub:
             return {}
         if method == "POST" and url.endswith("/git/refs"):
             return {}
+        if method == "POST" and url.endswith("/dispatches"):
+            self.dispatched = getattr(self, "dispatched", []) + [body]
+            return None
         raise AssertionError(url)
 
     # 읽기: 실제 GitHub 처럼 ref → 커밋 → 트리 → blob. 내용이 바뀌면 커밋 sha 도 바뀐다.

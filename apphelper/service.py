@@ -331,17 +331,31 @@ class Service:
         since = (monitor.main.since or "")[11:16]
         self.notify(f"🔴 {name} 오프라인" + (f" ({since})" if since else ""))
 
+    def _send_via_github(self, token: str, chat_id: str, text: str) -> None:
+        """GitHub 에 알림 요청만 보내고, GitHub Actions(notify.yml)가 텔레그램으로 보낸다."""
+        from .core.telegram import NOTIFY_EVENT, TelegramError, seal
+        if not (token and chat_id):
+            raise TelegramError("봇 토큰과 채팅 ID 를 먼저 넣으세요")
+        publisher = self._publisher()
+        if publisher is None:
+            raise TelegramError("GitHub 설정(소유자·레포·토큰)이 필요합니다")
+        publisher.dispatch(NOTIFY_EVENT, {"m": seal(token, chat_id, text)})
+
     def notify(self, text: str, wait: bool = False) -> str:
         """텔레그램 알림. 기본은 백그라운드로 보내고, wait=True 면 결과 설명을 돌려준다 (시험 알림용)."""
         s = self.data.settings
         send = self.notifier
+        if send is None:
+            send = self._send_via_github if s.telegram_route == "github" else None
         if send is None:
             from .core.telegram import send
 
         def go() -> str:
             try:
                 send(s.telegram_token, s.telegram_chat_id, text)
-                self.last_notify = f"{self.now():%m/%d %H:%M} 알림 보냄: {text}"
+                how = ("GitHub 에 알림 요청 보냄 — 보통 20~40초 뒤 도착" if send == self._send_via_github
+                       else "알림 보냄")
+                self.last_notify = f"{self.now():%m/%d %H:%M} {how}: {text}"
             except Exception as e:  # noqa: BLE001 - 알림 실패로 감시가 멈추지 않게
                 self.last_notify = f"{self.now():%m/%d %H:%M} 알림 실패: {e}"
                 log.debug("텔레그램 알림 실패: %s", e)

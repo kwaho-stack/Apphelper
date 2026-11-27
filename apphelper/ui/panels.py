@@ -171,8 +171,15 @@ class MessengerPanel(QWidget):
         self.tg_token.setEchoMode(QLineEdit.EchoMode.Password)
         self.tg_token.setPlaceholderText("@BotFather 에서 받은 봇 토큰")
         self.tg_token.editingFinished.connect(self._apply_telegram)
+        from PySide6.QtWidgets import QComboBox
+        self.tg_route = QComboBox()
+        self.tg_route.addItem("GitHub 거쳐 보내기 (회사망에서 텔레그램이 막힌 경우)", "github")
+        self.tg_route.addItem("PC 에서 직접 보내기", "direct")
+        self.tg_route.setToolTip("GitHub 거쳐 보내기: PC 는 GitHub 에 알림 요청만 올리고 GitHub 가 텔레그램으로 보냅니다.\n"
+                                 "저장소 Settings → Secrets and variables → Actions 에 TELEGRAM_TOKEN(봇 토큰)을 한 번 넣어야 합니다.")
+        self.tg_route.currentIndexChanged.connect(self._apply_telegram)
         self.tg_chat = QLineEdit()
-        self.tg_chat.setPlaceholderText("봇에게 메시지를 보낸 뒤 '찾기'")
+        self.tg_chat.setPlaceholderText("숫자 (텔레그램 @userinfobot 이 알려 주는 Id)")
         self.tg_chat.editingFinished.connect(self._apply_telegram)
         find = QPushButton("찾기")
         find.clicked.connect(self._find_chat)
@@ -185,6 +192,7 @@ class MessengerPanel(QWidget):
         self.notify_status.setWordWrap(True)
         self.notify_status.setStyleSheet("color: gray;")
         nf.addRow("", self.notify)
+        nf.addRow("보내는 방법", self.tg_route)
         nf.addRow("봇 토큰", self.tg_token)
         nf.addRow("채팅 ID", crow2)
         nf.addRow("", test)
@@ -253,6 +261,7 @@ class MessengerPanel(QWidget):
         st = self.editor.data.settings
         self.tg_token.setText(st.telegram_token)
         self.tg_chat.setText(st.telegram_chat_id)
+        self.tg_route.setCurrentIndex(max(0, self.tg_route.findData(st.telegram_route)))
         self._load_quiet()
         self.anchor_rgb.setText(f"RGB {tuple(c.anchor.rgb)}" if c.anchor.x else "미설정 (검사 안 함)")
         self.others.setRowCount(0)
@@ -364,6 +373,7 @@ class MessengerPanel(QWidget):
         st = self.editor.data.settings
         st.telegram_token = self.tg_token.text().strip()
         st.telegram_chat_id = self.tg_chat.text().strip()
+        st.telegram_route = self.tg_route.currentData() or "github"
         self.editor.changed(refresh=False)
 
     def _find_chat(self):
@@ -377,7 +387,7 @@ class MessengerPanel(QWidget):
             try:
                 return "id:" + telegram.find_chat_id(token)
             except telegram.TelegramError as e:
-                return f"err:{e}"
+                return f"err:{e} — PC 에서 텔레그램 접속이 막혀 있으면 휴대폰 텔레그램의 @userinfobot 에게 시작(START)을 눌러 받은 Id 숫자를 넣으세요"
         run_in_background(work, self._found_chat)
 
     def _found_chat(self, result: str):
@@ -397,6 +407,12 @@ class MessengerPanel(QWidget):
         token, chat = st.telegram_token, st.telegram_chat_id
         name = self.cfg.target.name or "주 대상"
         self.notify_status.setText("보내는 중…")
+        send_test = getattr(self.editor, "_on_test_notify", None)
+        if send_test is not None:  # 앱의 서비스로 보낸다 (설정한 보내는 방법 그대로)
+            self.editor.flush()
+            text = f"✅ Apphelper 시험 알림 — {name} 이(가) 오프라인이 되면 이렇게 알려 드립니다."
+            run_in_background(lambda: send_test(text), self._notify_done)
+            return
 
         def work() -> str:
             try:

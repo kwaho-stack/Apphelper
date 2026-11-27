@@ -1,0 +1,44 @@
+# Apphelper 휴대폰 알림 중계: PC 가 보낸 알림 요청(repository_dispatch)을 받아 텔레그램으로 보낸다.
+# 회사망에서 텔레그램 접속이 막혀 있어도 PC 는 GitHub 에만 닿으면 된다.
+# 준비: 저장소 Settings → Secrets and variables → Actions → New repository secret
+#       이름 TELEGRAM_TOKEN, 값 = 봇 토큰 (PC 앱에 넣은 것과 같은 값)
+name: notify
+
+on:
+  repository_dispatch:
+    types: [apphelper-notify]
+
+permissions: {}
+
+jobs:
+  telegram:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - run: python3 -m pip install --quiet --disable-pip-version-check cryptography
+      - name: send
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          SEALED: ${{ github.event.client_payload.m }}
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, os, sys, urllib.request
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          token = os.environ.get("TELEGRAM_TOKEN", "")
+          if not token:
+              sys.exit("저장소 Secrets 에 TELEGRAM_TOKEN 이 없습니다")
+          raw = base64.b64decode(os.environ["SEALED"])
+          key = hashlib.pbkdf2_hmac("sha256", token.encode(), b"apphelper-notify-v1", 100_000)
+          try:
+              msg = json.loads(AESGCM(key).decrypt(raw[:12], raw[12:], None))
+          except Exception:
+              sys.exit("알림을 풀 수 없습니다 (PC 앱의 봇 토큰과 Secrets 의 TELEGRAM_TOKEN 이 다름)")
+          req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage",
+                                       data=json.dumps({"chat_id": msg["chat"], "text": msg["text"]}).encode(),
+                                       headers={"Content-Type": "application/json"})
+          with urllib.request.urlopen(req, timeout=20) as r:
+              ok = json.loads(r.read()).get("ok")
+          if not ok:
+              sys.exit("텔레그램이 거절했습니다 (채팅 ID 확인, 봇에게 시작(START)을 눌렀는지 확인)")
+          print("보냄")
+          PY

@@ -168,6 +168,7 @@ class Settings:
     remote_closeall: bool = False    # 결과 페이지에서 '모든 창 종료' 허용 (기본 꺼짐)
     telegram_token: str = ""         # 휴대폰 알림용 텔레그램 봇 토큰 (이 PC 에만 저장)
     telegram_chat_id: str = ""
+    telegram_route: str = "github"   # github: GitHub Actions 가 대신 보냄 (회사망에서 텔레그램이 막힌 경우) / direct
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

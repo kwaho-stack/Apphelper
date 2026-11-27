@@ -141,6 +141,10 @@ class Publisher:
         raw = self._get_bytes(REQUEST_FILE, REMOTE_BRANCH)
         return json.loads(raw.decode("utf-8")) if raw else None
 
+    def dispatch(self, event_type: str, payload: dict[str, Any]) -> None:
+        """GitHub Actions 를 깨운다 (repository_dispatch). Contents 쓰기 권한이면 된다."""
+        self._call("POST", "/dispatches", {"event_type": event_type, "client_payload": payload})
+
     def publish(self, results: dict[str, Any], binaries: dict[str, bytes] | None = None) -> str:
         """페이지와 결과(그리고 binaries 의 파일들)를 부모 없는 커밋 1개로 만들어 gh-pages 를 덮어쓴다.
 
